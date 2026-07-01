@@ -56,7 +56,16 @@ public class TunerConstants {
 
     // Initial configs for the drive and steer motors and the azimuth encoder; these cannot be null.
     // Some configs will be overwritten; check the `with*InitialConfigs()` API documentation.
-    private static final TalonFXConfiguration driveInitialConfigs = new TalonFXConfiguration();
+    private static final TalonFXConfiguration driveInitialConfigs = new TalonFXConfiguration()
+        // Brake the drive motors so the robot decelerates and holds when the stick is released /
+        // on disable, instead of coasting on its own momentum (TalonFX default is Coast).
+        .withMotorOutput(new MotorOutputConfigs().withNeutralMode(NeutralModeValue.Brake))
+        // Supply-current cap = brownout protection for the 4 drive Krakens (draw multiplies x4).
+        // Conservative start (Hardware-Data-Sheet sec.7); the stator/traction cap comes from
+        // kSlipCurrent, which the swerve factory copies into StatorCurrentLimit. TODO tune on robot.
+        .withCurrentLimits(new CurrentLimitsConfigs()
+            .withSupplyCurrentLimit(Amps.of(30))
+            .withSupplyCurrentLimitEnable(true));
     private static final TalonFXConfiguration steerInitialConfigs = new TalonFXConfiguration()
         .withCurrentLimits(
             new CurrentLimitsConfigs()
@@ -64,7 +73,12 @@ public class TunerConstants {
                 // stator current limit to help avoid brownouts without impacting performance.
                 .withStatorCurrentLimit(Amps.of(40))
                 .withStatorCurrentLimitEnable(true)
-        );
+                // Conservative supply cap for the steer Krakens (Hardware-Data-Sheet sec.7). TODO tune.
+                .withSupplyCurrentLimit(Amps.of(20))
+                .withSupplyCurrentLimitEnable(true)
+        )
+        // Brake so the wheels hold their commanded steer angle instead of coasting.
+        .withMotorOutput(new MotorOutputConfigs().withNeutralMode(NeutralModeValue.Brake));
     private static final CANcoderConfiguration encoderInitialConfigs = new CANcoderConfiguration();
     // Configs for the Pigeon 2; leave this null to skip applying Pigeon 2 configs
     private static final Pigeon2Configuration pigeonConfigs = null;

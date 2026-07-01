@@ -1,7 +1,14 @@
 package frc.robot.subsystems.misc;
 
+import com.ctre.phoenix6.configs.CurrentLimitsConfigs;
+import com.ctre.phoenix6.configs.MotorOutputConfigs;
 import com.ctre.phoenix6.hardware.TalonFX;
+import com.ctre.phoenix6.signals.NeutralModeValue;
+import com.revrobotics.ResetMode;
+import com.revrobotics.PersistMode;
 import com.revrobotics.spark.SparkMax;
+import com.revrobotics.spark.config.SparkBaseConfig.IdleMode;
+import com.revrobotics.spark.config.SparkMaxConfig;
 import edu.wpi.first.networktables.GenericEntry;
 import edu.wpi.first.wpilibj.shuffleboard.Shuffleboard;
 import edu.wpi.first.wpilibj.shuffleboard.ShuffleboardTab;
@@ -39,6 +46,23 @@ public class IntakeSubsystem extends SubsystemBase {
         Sensors sensors = new Sensors();
 
     public IntakeSubsystem(){
+
+        // Conservative-start current limits + neutral mode (Hardware-Data-Sheet sec.7). TODO tune on robot.
+            // Front rollers: Kraken X44 - stator 30A / supply 20A, Coast.
+            CurrentLimitsConfigs rollerLimits = new CurrentLimitsConfigs();
+            rollerLimits.StatorCurrentLimit = 30;
+            rollerLimits.StatorCurrentLimitEnable = true;
+            rollerLimits.SupplyCurrentLimit = 20;
+            rollerLimits.SupplyCurrentLimitEnable = true;
+            MotorOutputConfigs rollerOutput = new MotorOutputConfigs();
+            rollerOutput.NeutralMode = NeutralModeValue.Coast;
+            intakeMotor.getConfigurator().apply(rollerLimits);
+            intakeMotor.getConfigurator().apply(rollerOutput);
+            // Slider: NEO 2.0 - 20A smart limit, Brake to hold position. kNoResetSafeParameters preserves flashed inversion.
+            SparkMaxConfig sliderConfig = new SparkMaxConfig();
+            sliderConfig.smartCurrentLimit(20);
+            sliderConfig.idleMode(IdleMode.kBrake);
+            intakeSliderMotor.configure(sliderConfig, ResetMode.kNoResetSafeParameters, PersistMode.kPersistParameters);
 
         //Initializing Tracker Variables
             currentState = IntakeSSTATE.STOW_STATE;

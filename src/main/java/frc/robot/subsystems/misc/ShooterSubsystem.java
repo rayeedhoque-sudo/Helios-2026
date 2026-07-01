@@ -1,12 +1,19 @@
 package frc.robot.subsystems.misc;
 
+import com.ctre.phoenix6.configs.CurrentLimitsConfigs;
+import com.ctre.phoenix6.configs.MotorOutputConfigs;
 import com.ctre.phoenix6.configs.Slot0Configs;
 import com.ctre.phoenix6.controls.Follower;
 import com.ctre.phoenix6.controls.VelocityVoltage;
 import com.ctre.phoenix6.hardware.TalonFX;
 import com.ctre.phoenix6.signals.MotorAlignmentValue;
+import com.ctre.phoenix6.signals.NeutralModeValue;
+import com.revrobotics.ResetMode;
+import com.revrobotics.PersistMode;
 import com.revrobotics.spark.SparkAbsoluteEncoder;
 import com.revrobotics.spark.SparkMax;
+import com.revrobotics.spark.config.SparkBaseConfig.IdleMode;
+import com.revrobotics.spark.config.SparkMaxConfig;
 
 import edu.wpi.first.math.MathUtil;
 import edu.wpi.first.math.controller.PIDController;
@@ -88,6 +95,28 @@ public class ShooterSubsystem extends SubsystemBase{
 
             //Coniguring Motors
                 shooterA.getConfigurator().apply(shooterVelConfigs);
+
+                // Conservative-start current limits + neutral mode (Hardware-Data-Sheet sec.7). TODO tune on robot.
+                // Flywheels: Kraken X60 - stator 40A / supply 25A, Coast (let them spin down freely).
+                CurrentLimitsConfigs flywheelLimits = new CurrentLimitsConfigs();
+                flywheelLimits.StatorCurrentLimit = 40;
+                flywheelLimits.StatorCurrentLimitEnable = true;
+                flywheelLimits.SupplyCurrentLimit = 25;
+                flywheelLimits.SupplyCurrentLimitEnable = true;
+                MotorOutputConfigs flywheelOutput = new MotorOutputConfigs();
+                flywheelOutput.NeutralMode = NeutralModeValue.Coast;
+                for (TalonFX flywheel : new TalonFX[] { shooterA, shooterB, shooterC, shooterD }) {
+                    flywheel.getConfigurator().apply(flywheelLimits);
+                    flywheel.getConfigurator().apply(flywheelOutput);
+                }
+
+                // Hood: NEO 550 - 20A smart limit (fragile; hard cap 30A), Brake to hold angle.
+                // kNoResetSafeParameters keeps any inversion/encoder settings flashed via REV Hardware Client.
+                SparkMaxConfig hoodConfig = new SparkMaxConfig();
+                hoodConfig.smartCurrentLimit(20);
+                hoodConfig.idleMode(IdleMode.kBrake);
+                shooterAngle.configure(hoodConfig, ResetMode.kNoResetSafeParameters, PersistMode.kPersistParameters);
+
                 shooterB.setControl(new Follower(shooterA.getDeviceID(), MotorAlignmentValue.Aligned));
                 shooterC.setControl(new Follower(shooterA.getDeviceID(), MotorAlignmentValue.Opposed));
                 shooterD.setControl(new Follower(shooterA.getDeviceID(), MotorAlignmentValue.Opposed));

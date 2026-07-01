@@ -1,7 +1,14 @@
 package frc.robot.subsystems.misc;
 
+import com.ctre.phoenix6.configs.CurrentLimitsConfigs;
+import com.ctre.phoenix6.configs.MotorOutputConfigs;
 import com.ctre.phoenix6.hardware.TalonFX;
+import com.ctre.phoenix6.signals.NeutralModeValue;
+import com.revrobotics.ResetMode;
+import com.revrobotics.PersistMode;
 import com.revrobotics.spark.SparkMax;
+import com.revrobotics.spark.config.SparkBaseConfig.IdleMode;
+import com.revrobotics.spark.config.SparkMaxConfig;
 
 import edu.wpi.first.networktables.GenericEntry;
 import edu.wpi.first.wpilibj.shuffleboard.Shuffleboard;
@@ -44,6 +51,24 @@ public class HopperSubsystem extends SubsystemBase{
         Sensors sensors = new Sensors();
     
     public HopperSubsystem(){
+        // Conservative-start current limits + neutral mode (Hardware-Data-Sheet sec.7). TODO tune on robot.
+            // Hopper A/B: NEO 2.0 - 20A smart limit, Coast. kNoResetSafeParameters preserves flashed inversion.
+            SparkMaxConfig hopperConfig = new SparkMaxConfig();
+            hopperConfig.smartCurrentLimit(20);
+            hopperConfig.idleMode(IdleMode.kCoast);
+            hopperMotorA.configure(hopperConfig, ResetMode.kNoResetSafeParameters, PersistMode.kPersistParameters);
+            hopperMotorB.configure(hopperConfig, ResetMode.kNoResetSafeParameters, PersistMode.kPersistParameters);
+            // Kicker: Kraken X60 - stator 30A / supply 20A, Coast.
+            CurrentLimitsConfigs kickerLimits = new CurrentLimitsConfigs();
+            kickerLimits.StatorCurrentLimit = 30;
+            kickerLimits.StatorCurrentLimitEnable = true;
+            kickerLimits.SupplyCurrentLimit = 20;
+            kickerLimits.SupplyCurrentLimitEnable = true;
+            MotorOutputConfigs kickerOutput = new MotorOutputConfigs();
+            kickerOutput.NeutralMode = NeutralModeValue.Coast;
+            kickerMotor.getConfigurator().apply(kickerLimits);
+            kickerMotor.getConfigurator().apply(kickerOutput);
+
         //Tracker Variables
             fuelDetectedIndexer = false;
             kickState = HOPPERSTATE.STOW;

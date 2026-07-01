@@ -35,11 +35,13 @@ public class RobotContainer {
     private final CommandXboxController joystick2 = new CommandXboxController(0);
 
     public final CommandSwerveDrivetrain drivetrain = TunerConstants.createDrivetrain();
-    public final ShooterSubsystem shoterSS = new ShooterSubsystem(false, drivetrain);
-    public final IntakeSubsystem intakeSS = new IntakeSubsystem();
-    public final HopperSubsystem hopperSS = new HopperSubsystem();
-
-    private final SlewrRateLimiter driveLimiter = new SlewRateLimiter(2.5); //Change the value to increase step.
+    // ---- TEMP: drivetrain-only test -- shooter / intake / hopper DISABLED ----
+    // Only the drivetrain is constructed, so no other subsystem's periodic() runs (this also stops
+    // ShooterSubsystem from driving the hood NEO 550 on enable). To restore the full robot, uncomment
+    // these three fields AND their bindings in configureBindings() (both marked "drivetrain-only test").
+    // public final ShooterSubsystem shoterSS = new ShooterSubsystem(false, drivetrain);
+    // public final IntakeSubsystem intakeSS = new IntakeSubsystem();
+    // public final HopperSubsystem hopperSS = new HopperSubsystem();
 
     public RobotContainer() {
         configureBindings();
@@ -53,8 +55,8 @@ public class RobotContainer {
                 drivetrain.setDefaultCommand(
                     // Drivetrain will execute this command periodically
                     drivetrain.applyRequest(() ->
-                        drive.withVelocityX(driveLimiter.calculate(-joystick2.getLeftC() * MaxSpeed)) // Drive forward with negative Y (forward)
-                            .withVelocityY(driveLimiter.calculate(-joystick2.getLeftY() * MaxSpeed)) // Drive left with negative X (left)
+                        drive.withVelocityX(-joystick2.getLeftY() * MaxSpeed * 0.5) // Forward = negative left-Y (WPILib convention)
+                            .withVelocityY(-joystick2.getLeftX() * MaxSpeed * 0.5) // Left = negative left-X
                             .withRotationalRate(-joystick2.getRightX() * MaxAngularRate) // Drive counterclockwise 
                     )
                 );
@@ -71,23 +73,28 @@ public class RobotContainer {
             //Drive Train Break
                 joystick2.start().whileTrue(drivetrain.applyRequest(() -> brake));
 
-            // Reset the field-centric heading on left bumper press.
-                joystick2.povCenter().onTrue(drivetrain.runOnce(drivetrain::seedFieldCentric));
+            // Reset (re-zero) the field-centric heading with the Y button. Use a dedicated button so
+            // it only fires on a deliberate press -- povCenter() is true whenever the D-pad is at rest,
+            // so the old binding re-seeded heading on any incidental D-pad tap-and-release.
+                joystick2.y().onTrue(drivetrain.runOnce(drivetrain::seedFieldCentric));
 
             drivetrain.registerTelemetry(logger::telemeterize);
 
         //IntakeSubsystem 
-            joystick2.rightBumper().whileTrue(intakeSS.intakeCommand()).whileFalse(intakeSS.stowCommand());
-            joystick2.leftBumper().whileTrue(intakeSS.outtakeCommand()).whileFalse(intakeSS.stowCommand());
+            // TEMP (drivetrain-only test) -- disabled:
+            // joystick2.rightBumper().whileTrue(intakeSS.intakeCommand()).whileFalse(intakeSS.stowCommand());
+            // joystick2.leftBumper().whileTrue(intakeSS.outtakeCommand()).whileFalse(intakeSS.stowCommand());
         //Hopper Subsystem
-            joystick2.x().whileTrue(hopperSS.setHopperState(HOPPERSTATE.RUN)).onFalse(hopperSS.setHopperState(HOPPERSTATE.STOW));
+            // TEMP (drivetrain-only test) -- disabled:
+            // joystick2.x().whileTrue(hopperSS.setHopperState(HOPPERSTATE.RUN)).onFalse(hopperSS.setHopperState(HOPPERSTATE.STOW));
         // Shooter Subsystem
 
-            joystick2.rightTrigger().whileTrue(
-                shoterSS.enableLiveData(true)
-            ).whileFalse(
-                shoterSS.enableLiveData(false)
-            );
+            // TEMP (drivetrain-only test) -- disabled:
+            // joystick2.rightTrigger().whileTrue(
+            //     shoterSS.enableLiveData(true)
+            // ).whileFalse(
+            //     shoterSS.enableLiveData(false)
+            // );
     }
 
     public Command getAutonomousCommand() {
