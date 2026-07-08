@@ -3,6 +3,7 @@ package frc.robot.subsystems.misc;
 import com.ctre.phoenix6.configs.CurrentLimitsConfigs;
 import com.ctre.phoenix6.configs.MotorOutputConfigs;
 import com.ctre.phoenix6.configs.Slot0Configs;
+import com.ctre.phoenix6.controls.CoastOut;
 import com.ctre.phoenix6.controls.Follower;
 import com.ctre.phoenix6.controls.VelocityVoltage;
 import com.ctre.phoenix6.hardware.TalonFX;
@@ -30,8 +31,6 @@ import frc.robot.Constants.SubsystemConstants.ShooterSubsystemConstants;
 import frc.robot.Constants.SubsystemConstants.Vision;
 import frc.robot.commands.CommandSwerveDrivetrain;
 import frc.robot.subsystems.utility.LimelightHelpers;
-import frc.robot.subsystems.utility.LimelightHelpers.LimelightResults;
-import frc.robot.subsystems.utility.LimelightHelpers.LimelightTarget_Fiducial;
 
 public class ShooterSubsystem extends SubsystemBase{
 
@@ -48,6 +47,10 @@ public class ShooterSubsystem extends SubsystemBase{
     
      //Shooter Speed - PID & FF
         private final VelocityVoltage m_velocity = new VelocityVoltage(0);
+        // Coast request for "flywheels off": closing the velocity loop on 0 rps would actively
+        // reverse-brake 4 spinning Krakens (regen current dump + gearbox stress) -- the Coast
+        // neutral mode only applies when no closed-loop request is latched.
+        private final CoastOut m_flywheelCoast = new CoastOut();
         private final Slot0Configs shooterVelConfigs = 
             new Slot0Configs().
             withKP(ShooterSubsystemConstants.SHOOTER_SPEED_kP). 
@@ -163,6 +166,21 @@ public class ShooterSubsystem extends SubsystemBase{
         private double getShooterAngleDegrees(){
             return (shooterAngleEncoder.getPosition() - ShooterSubsystemConstants.SHOOTER_ANGLE_OFFSET) / ShooterSubsystemConstants.NEO550_ROTATIONS_PER_HOOD_DEGREE;
         }
+
+        // True if the tag is any HUB or TRENCH tag (either alliance) on the 2026 REBUILT field.
+        // TODO filter to the CURRENT alliance's HUB once the shooting model (generate*) is real.
+        private static boolean isHubOrTrenchTag(int tagId){
+            for (int[] set : new int[][] {
+                    ShooterSubsystemConstants.APRILTAG_RED_HUB_IDS,
+                    ShooterSubsystemConstants.APRILTAG_BLUE_HUB_IDS,
+                    ShooterSubsystemConstants.APRILTAG_RED_TRENCH_IDS,
+                    ShooterSubsystemConstants.APRILTAG_BLUE_TRENCH_IDS }) {
+                for (int id : set) {
+                    if (id == tagId) return true;
+                }
+            }
+            return false;
+        }
     //Subsystem Methods
         public void enableSubsystem(){
             enableSubsystem = true;
@@ -237,10 +255,15 @@ public class ShooterSubsystem extends SubsystemBase{
     @Override
     public void periodic(){
         if(enableSubsystem){
-            //Shooter Speed 
+            //Shooter Speed
                 m_velocity.Slot = 0;
                 double motorRps = desired_Velocity /(2 * Math.PI * ShooterSubsystemConstants.FLYWHEEL_RADIUS_METERS * ShooterSubsystemConstants.FLYWHEEL_ROTATIONS_PER_MOTOR_ROTATION);
+                if (motorRps == 0) {
+                    // "Off" = coast down freely, never VelocityVoltage(0) (see m_flywheelCoast note).
+                    shooterA.setControl(m_flywheelCoast);
+                } else {
                     shooterA.setControl(m_velocity.withVelocity(motorRps));
+                }
 
             //Shooter Angle
                 double anglePID = shooterAnglePID.calculate(getShooterAngleDegrees(), MathUtil.clamp(desired_Angle, ShooterSubsystemConstants.MIN_ANGLE, ShooterSubsystemConstants.MAX_ANGLE));
@@ -253,23 +276,24 @@ public class ShooterSubsystem extends SubsystemBase{
             //Vision
             if(enableVision){
                 boolean foundTarget = false;
-                LimelightResults results = LimelightHelpers.getLatestResults(Vision.CAM_LIMELIGHT);
-                if(results.targets_Fiducials.length > 0){
-                    for(LimelightTarget_Fiducial tag : results.targets_Fiducials){
-                        if(tag.fiducialID == ShooterSubsystemConstants.APRILTAG_RED_HUB_FIDUCIALID || 
-                           tag.fiducialID == ShooterSubsystemConstants.APRILTAG_BLUE_HUB_FIDUCIALID ||
-                           tag.fiducialID == ShooterSubsystemConstants.APRILTAG_RED_TRENCH_FIDUCIALID ||
-                           tag.fiducialID == ShooterSubsystemConstants.APRILTAG_BLUE_TRENCH_FIDUCIALID
-                        ){
-                            Pose3d targetPose = tag.getTargetPose_CameraSpace();
-                                target_distance = Math.abs(targetPose.getX()/Vision.LL_X_MULTIPLIER);
-                                target_height = Math.abs(targetPose.getZ()/Vision.LL_Z_MULTIPLIER);
-                                degreesToAlignToTarget = Math.toDegrees(Math.atan2(targetPose.getY()/Vision.LL_Y__MULTIPLIER, targetPose.getX()/Vision.LL_X_MULTIPLIER));
-                                foundTarget = true;
-                                break;
-                            }
-                        }
+                // Cheap NetworkTables reads for the PRIMARY target only -- the old
+                // getLatestResults() call deserialized the Limelight's full JSON dump with
+                // Jackson every 20 ms loop, which stalls the whole robot loop.
+                if (LimelightHelpers.getTV(Vision.CAM_LIMELIGHT)) {
+                    int tagId = (int) LimelightHelpers.getFiducialID(Vision.CAM_LIMELIGHT);
+                    if (isHubOrTrenchTag(tagId)) {
+                        Pose3d targetPose = LimelightHelpers.getTargetPose3d_CameraSpace(Vision.CAM_LIMELIGHT);
+                        // Limelight camera space: X = right, Y = DOWN, Z = forward (depth).
+                        // Old code read X as distance, Z as height, and computed the bearing in
+                        // the vertical plane. TODO verify signs/axes on the robot with a real tag.
+                        target_distance = Math.abs(targetPose.getZ() / Vision.LL_Z_MULTIPLIER);
+                        target_height = Math.abs(targetPose.getY() / Vision.LL_Y__MULTIPLIER);
+                        degreesToAlignToTarget = Math.toDegrees(Math.atan2(
+                            targetPose.getX() / Vision.LL_X_MULTIPLIER,
+                            targetPose.getZ() / Vision.LL_Z_MULTIPLIER));
+                        foundTarget = true;
                     }
+                }
                 if(foundTarget){
                   setDesiredFlywheelVelocity(generateShooterFlywheelVelocity(target_distance, target_height));
                   setDesired_Angle(generateAngle(target_distance, target_height));
@@ -318,15 +342,26 @@ public class ShooterSubsystem extends SubsystemBase{
                         shooterA.getConfigurator().apply(shooterVelConfigs);
                     }
                 //Angle
-                    if(shooterAnglePID.getP() != ShooterSubsystemConstants.SHOOTER_ANGLE_kP ||
-                       shooterAnglePID.getI() != ShooterSubsystemConstants.SHOOTER_ANGLE_kI ||
-                       shooterAnglePID.getD() != ShooterSubsystemConstants.SHOOTER_ANGLE_kD){
+                    // Compare the live PID against the SHUFFLEBOARD entries (like the speed block
+                    // above) -- the old guard compared against the static constants the PID was
+                    // built from, which never change, so slider edits silently never applied.
+                    if(shooterAnglePID.getP() != shooterAngle_kP.getDouble(shooterAnglePID.getP()) ||
+                       shooterAnglePID.getI() != shooterAngle_kI.getDouble(shooterAnglePID.getI()) ||
+                       shooterAnglePID.getD() != shooterAngle_kD.getDouble(shooterAnglePID.getD())){
                         shooterAnglePID.setPID(
-                            shooterAngle_kP.getDouble(ShooterSubsystemConstants.SHOOTER_ANGLE_kP), 
-                            shooterAngle_kI.getDouble(ShooterSubsystemConstants.SHOOTER_ANGLE_kI), 
-                            shooterAngle_kD.getDouble(ShooterSubsystemConstants.SHOOTER_ANGLE_kD)
+                            shooterAngle_kP.getDouble(shooterAnglePID.getP()),
+                            shooterAngle_kI.getDouble(shooterAnglePID.getI()),
+                            shooterAngle_kD.getDouble(shooterAnglePID.getD())
                         );
                     }
+            } else {
+                // Subsystem disabled while the robot is still enabled: VelocityVoltage LATCHES on
+                // the TalonFX, so just skipping the body would leave the flywheels spinning at the
+                // last setpoint forever. Explicitly coast the flywheels and stop the hood (its
+                // Brake idle mode holds the angle).
+                shooterA.setControl(m_flywheelCoast);
+                shooterAngle.setVoltage(0);
+                desired_Velocity = 0;
             }
     }
 }

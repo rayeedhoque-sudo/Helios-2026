@@ -3,6 +3,8 @@ package frc.robot.commands;
 import static edu.wpi.first.units.Units.*;
 
 import java.util.Optional;
+import java.util.Set;
+import java.util.function.DoubleSupplier;
 import java.util.function.Supplier;
 
 import com.ctre.phoenix6.SignalLogger;
@@ -216,18 +218,21 @@ public class CommandSwerveDrivetrain extends TunerSwerveDrivetrain implements Su
             try{
                 config = RobotConfig.fromGUISettings();
             } catch (Exception e) {
-                // Handle exception as needed
-                e.printStackTrace();
+                // Loud failure: without this config AutoBuilder is never configured and ALL
+                // path following silently dies. Surface it on the Driver Station.
+                DriverStation.reportError(
+                    "PathPlanner RobotConfig failed to load -- autos and path following are DISABLED: "
+                        + e.getMessage(), e.getStackTrace());
             }
         if(config != null){
                   //Configure Auto Builder
             AutoBuilder.configure(
             () -> this.getState().Pose, // Robot pose supplier
-            pose -> this.seedFieldCentric(pose.getRotation()), // Method to reset odometry (will be called if your auto has a starting pose)
+            pose -> this.resetPose(pose), // Reset odometry to the path's full start pose (X, Y AND rotation -- seedFieldCentric only set heading and silently dropped X/Y)
             () -> this.getState().Speeds, // ChassisSpeeds supplier. MUST BE ROBOT RELATIVE
             (speeds, feedforwards) -> this.setControl(m_applyRobotSpeeds.withSpeeds(speeds).withWheelForceFeedforwardsX(feedforwards.robotRelativeForcesX()).withWheelForceFeedforwardsY(feedforwards.robotRelativeForcesY())), // Method that will drive the robot given ROBOT RELATIVE ChassisSpeeds. Also optionally outputs individual module feedforwards
             new PPHolonomicDriveController( // PPHolonomicController is the built in path following controller for holonomic drive trains
-                    new PIDConstants(0.0001, 0.0, 0.0), // Translation PID constants
+                    new PIDConstants(5.0, 0.0, 0.0), // Translation PID (m/s per m of error; old 0.0001 was effectively open-loop). TODO tune on robot
                     new PIDConstants(5, 0.0, 0.0) // Rotation PID constants
             ),
             config, // The robot configuration
@@ -309,29 +314,38 @@ public class CommandSwerveDrivetrain extends TunerSwerveDrivetrain implements Su
                 m_hasAppliedOperatorPerspective = true;
             });
         }
-        //Vision
-            // LimelightHelpers.SetRobotOrientation(Vision.CAM_LIMELIGHT, this.getState().Pose.getRotation().getDegrees(), 0, 0, 0, 0,0);
-            // LimelightHelpers.SetIMUMode(Vision.CAM_LIMELIGHT, 
-            //     (DriverStation.isAutonomous()) ? 1 : 4
-            // );
-            //     // 1 -> EXTERNAL_SEED : Seed internal IMU
-            //     // 4 -> INTERNAL_EXTERNAL_ASSIST : Use internal IMU + MT1
-            // LimelightHelpers.PoseEstimate mt2 = 
-            // (DriverStation.getAlliance().get() == Alliance.Blue) ? 
-            //     LimelightHelpers.getBotPoseEstimate_wpiBlue_MegaTag2(Vision.CAM_LIMELIGHT) : 
-            //     LimelightHelpers.getBotPoseEstimate_wpiRed_MegaTag2(Vision.CAM_LIMELIGHT);
-            // boolean doRejectUpdate = false;
-            //     if(Math.abs(this.getPigeon2().getAngularVelocityZDevice().getValueAsDouble())> 360){
-            //         doRejectUpdate = true;
-            //     }
-            //     if(mt2.tagCount == 0){
-            //         doRejectUpdate = true;
-            //     }
-            // if(!doRejectUpdate){
-            //     this.setVisionMeasurementStdDevs(VecBuilder.fill(0.7, 0.7, 9999999));
-            //     this.addVisionMeasurement(mt2.pose, mt2.timestampSeconds);
-            // }
+        // Vision pose correction (MegaTag2). Disabled by default until the Limelight's mounting,
+        // pipeline, and field map are verified on the robot -- flip Vision.ENABLE_MEGATAG2_POSE.
+        if (Vision.ENABLE_MEGATAG2_POSE) {
+            updateVisionPose();
+        }
+    }
 
+    /**
+     * Fuses a Limelight MegaTag2 pose estimate into the drivetrain's pose estimator.
+     * Always uses the BLUE-origin estimate: PathPlanner (and this drivetrain's pose) keep the
+     * origin on the blue side for both alliances, so alliance-switching to the red-origin
+     * estimate would corrupt the pose. Safe to call with no Limelight connected.
+     */
+    private void updateVisionPose() {
+        // Feed the Limelight our gyro yaw (deg, blue-origin) -- required for MegaTag2.
+        LimelightHelpers.SetRobotOrientation(Vision.CAM_LIMELIGHT,
+            this.getState().Pose.getRotation().getDegrees(), 0, 0, 0, 0, 0);
+        LimelightHelpers.SetIMUMode(Vision.CAM_LIMELIGHT,
+            (DriverStation.isAutonomous()) ? 1 : 4
+        );
+            // 1 -> EXTERNAL_SEED : Seed internal IMU
+            // 4 -> INTERNAL_EXTERNAL_ASSIST : Use internal IMU + MT1
+
+        PoseEstimate mt2 = LimelightHelpers.getBotPoseEstimate_wpiBlue_MegaTag2(Vision.CAM_LIMELIGHT);
+        if (mt2 == null || mt2.tagCount == 0) {
+            return; // no Limelight data / no tags in view
+        }
+        if (Math.abs(this.getPigeon2().getAngularVelocityZDevice().getValueAsDouble()) > 360) {
+            return; // spinning too fast for a trustworthy MegaTag2 solve
+        }
+        // Trust MegaTag2 X/Y, never its yaw (huge theta std dev) -- the Pigeon owns heading.
+        this.addVisionMeasurement(mt2.pose, mt2.timestampSeconds, VecBuilder.fill(0.7, 0.7, 9999999));
     }
 
     private void startSimThread() {
@@ -395,18 +409,38 @@ public class CommandSwerveDrivetrain extends TunerSwerveDrivetrain implements Su
     }
 
     public Command rotateToAngle(double targetAngleDegrees){
-        var request = new SwerveRequest.FieldCentricFacingAngle();
-        var idle = new SwerveRequest.Idle();
+        return rotateToAngle(() -> targetAngleDegrees);
+    }
 
+    /**
+     * Supplier overload so the target can be a LIVE value (e.g. a vision bearing that updates
+     * every loop). A plain double is frozen at binding-construction time -- binding
+     * rotateToAngle(shooter.getDegreesToAlignToTarget()) would rotate to whatever the value was
+     * at boot (0 deg) forever; bind rotateToAngle(shooter::getDegreesToAlignToTarget) instead.
+     */
+    public Command rotateToAngle(DoubleSupplier targetAngleDegrees){
+        var request = new SwerveRequest.FieldCentricFacingAngle();
+        // The HeadingController gains default to 0 -- without this the request outputs zero
+        // rotation and the command would hold the drivetrain forever. Radians in, rad/s out.
+        request.HeadingController.setPID(5.0, 0.0, 0.0); // TODO tune on robot
+        request.HeadingController.enableContinuousInput(-Math.PI, Math.PI); // take the short way around
+        // Cap the commanded spin (P-only at 5 rad/s per rad could otherwise demand ~15 rad/s).
+        request.MaxAbsRotationalRate = 1.5 * Math.PI; // rad/s. TODO tune on robot
+
+        // The command must END when on target (or on the timeout backstop) so the drivetrain
+        // returns to the driver's default drive command -- chaining an Idle request here would
+        // hold the drivetrain forever and lock the driver out.
         return this.applyRequest(() ->
             request.withTargetDirection(
-                Rotation2d.fromDegrees(targetAngleDegrees)
+                Rotation2d.fromDegrees(targetAngleDegrees.getAsDouble())
             )
         ).until(() ->
+            // Rotation2d.minus wraps, so 179 deg vs -179 deg reads as 2 deg apart, not 358.
             Math.abs(
-                this.getState().Pose.getRotation().getDegrees() - targetAngleDegrees
-            ) < 1
-        ).andThen(this.applyRequest(() -> idle));  
+                this.getState().Pose.getRotation()
+                    .minus(Rotation2d.fromDegrees(targetAngleDegrees.getAsDouble())).getDegrees()
+            ) < 2 // deg. P-only control may hold a small steady-state error; 1 deg could never latch
+        ).withTimeout(2.0); // s -- backstop so a stalled align can never hang the drivetrain. TODO tune
     }
 
     public Command driveToPose(Pose2d targetPose){
@@ -421,19 +455,23 @@ public class CommandSwerveDrivetrain extends TunerSwerveDrivetrain implements Su
     }
 
     public Command driveToPose(Translation2d targetTranslation, Translation2d velocityTranslation){
+        // Deferred so the CURRENT pose is read when the command is scheduled, not when the
+        // binding is constructed at boot.
+        return Commands.defer(() -> {
+            double velocityMag = velocityTranslation.getNorm();
+            if(velocityMag < 0.001){
+                return Commands.none();
+            }
 
-        double velocityMag = velocityTranslation.getNorm();
-        if(velocityMag < 0.001){
-            return Commands.none();
-        }
+            // Distance from where the robot IS to the target. The old code used
+            // targetTranslation.getNorm() -- the target's distance from the FIELD ORIGIN (0,0),
+            // which is unrelated to how far the robot actually has to travel.
+            double distance = targetTranslation.minus(this.getState().Pose.getTranslation()).getNorm();
+            double time = distance / velocityMag;
 
-        double distance = targetTranslation.getNorm();
-        double time = distance / velocityMag;
+            var idle = new SwerveRequest.Idle();
 
-        var idle = new SwerveRequest.Idle();
-
-        return Commands.sequence(
-            this.applyRequest(() -> 
+            return this.applyRequest(() ->
                 m_applyRobotSpeeds.withSpeeds(
                     ChassisSpeeds.fromFieldRelativeSpeeds(
                         velocityTranslation.getX(),
@@ -442,9 +480,10 @@ public class CommandSwerveDrivetrain extends TunerSwerveDrivetrain implements Su
                         this.getState().Pose.getRotation()
                     )
                 )
-            ).withTimeout(time),
-
-            this.applyRequest(() -> idle)
-        );   
+            ).withTimeout(time)
+            // One-shot stop so the command ENDS and the driver's default command resumes -- a
+            // run-forever applyRequest(Idle) leg would hold the drivetrain and lock the driver out.
+            .andThen(this.runOnce(() -> this.setControl(idle)));
+        }, Set.of(this));
     }
 }

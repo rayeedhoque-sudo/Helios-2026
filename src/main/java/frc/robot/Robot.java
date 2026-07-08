@@ -26,7 +26,10 @@ public class Robot extends TimedRobot {
 
     @Override
     public void robotPeriodic() {
-        CommandScheduler.getInstance().run(); 
+        // Hoot replay must advance EVERY loop; a single call (it used to live in teleopInit)
+        // advances the replay one frame and then never again.
+        m_timeAndJoystickReplay.update();
+        CommandScheduler.getInstance().run();
     }
     @Override
     public void robotInit(){}
@@ -61,7 +64,6 @@ public class Robot extends TimedRobot {
         if (m_autonomousCommand != null) {
             CommandScheduler.getInstance().cancel(m_autonomousCommand);
         }
-        m_timeAndJoystickReplay.update();
     }
 
     @Override

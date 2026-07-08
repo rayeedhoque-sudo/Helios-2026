@@ -14,11 +14,17 @@ public class SubsystemConstants {
                 public static final double LL_X_MULTIPLIER = 1;
                 public static final double LL_Y__MULTIPLIER = 1;
                 public static final double LL_Z_MULTIPLIER = 1;
-            
-            public static final double PP_MAX_VELOCITY = 0;
-            public static final double PP_MAX_ACCELERATION = 0;
-            public static final double PP_MAX_ANGULAR_VELOCITY = 0;
-            public static final double PP_MAX_ANGULAR_ACCELERATION = 0;
+
+            // Fuse Limelight MegaTag2 pose estimates into odometry (CommandSwerveDrivetrain.periodic).
+            // TODO flip to true once the Limelight's mounting/pipeline is verified on the robot.
+            public static final boolean ENABLE_MEGATAG2_POSE = false;
+
+            // PathPlanner pathfinding constraints (driveToPose). Conservative starts -- the old
+            // zeros meant pathfinding could not move at all. TODO tune on robot.
+            public static final double PP_MAX_VELOCITY = 2.5;                       // m/s (robot max ~4.93)
+            public static final double PP_MAX_ACCELERATION = 2.5;                   // m/s^2
+            public static final double PP_MAX_ANGULAR_VELOCITY = Math.PI;           // rad/s (180 deg/s)
+            public static final double PP_MAX_ANGULAR_ACCELERATION = 2 * Math.PI;   // rad/s^2
 
         }
 
@@ -83,10 +89,14 @@ public class SubsystemConstants {
         }
 
         public static class ShooterSubsystemConstants{
-            public static final int APRILTAG_RED_HUB_FIDUCIALID = 7;
-            public static final int APRILTAG_BLUE_HUB_FIDUCIALID = 8;
-            public static final int APRILTAG_RED_TRENCH_FIDUCIALID = 7;
-            public static final int APRILTAG_BLUE_TRENCH_FIDUCIALID = 8;
+            // Official 2026 REBUILT field AprilTags (WPILib 2026-rebuilt-welded.json; verified in
+            // Hardware-Data-Sheet sec.3). The old single-ID constants were scrambled: 7 is a RED
+            // TRENCH tag (was labeled RED_HUB) and 8 is a RED HUB tag (was labeled BLUE_HUB and
+            // BLUE_TRENCH) -- vision would never have matched a real BLUE tag at all.
+            public static final int[] APRILTAG_RED_HUB_IDS = {2, 3, 4, 5, 8, 9, 10, 11};
+            public static final int[] APRILTAG_BLUE_HUB_IDS = {18, 19, 20, 21, 24, 25, 26, 27};
+            public static final int[] APRILTAG_RED_TRENCH_IDS = {1, 6, 7, 12};
+            public static final int[] APRILTAG_BLUE_TRENCH_IDS = {17, 22, 23, 28};
             public static final int SHOOTER_ANGLE_ID = 19;
             public static final int SHOOTER_ID_A = 13;
             public static final int SHOOTER_ID_B = 14;
