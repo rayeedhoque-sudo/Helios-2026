@@ -25,7 +25,15 @@ public class TunerConstants {
     // The steer motor uses any SwerveModule.SteerRequestType control request with the
     // output type specified by SwerveModuleConstants.SteerMotorClosedLoopOutput
     private static final Slot0Configs steerGains = new Slot0Configs()
-        .withKP(15).withKI(0).withKD(0)
+        // TUNING LOG (on-robot 2026-07-08): kP=100/kD=0.5 (CTRE template values) was violently
+        // unstable here -- those assume Pro FusedCANcoder feedback; with our unlicensed
+        // RemoteCANcoder the feedback is slower/delayed and kP=100 chattered ("locked up
+        // constantly"). Telemetry capture (2026-07-08, on blocks): steady-state tracking is
+        // ~1.3 deg median error; fast stick whips put modules 25-90 deg behind target and
+        // cosine compensation cuts drive -- the perceived "locking". That transient is mostly
+        // physics (azimuth slew time) + Remote feedback latency; Pro license (FusedCANcoder)
+        // is the real fix. kP=50 = highest tested-stable value; do not jump to 100 unlicensed.
+        .withKP(50).withKI(0).withKD(0)
         .withKS(0).withKV(0)
         .withStaticFeedforwardSign(StaticFeedforwardSignValue.UseClosedLoopSign);
     // When using closed-loop control, the drive motor uses the control
@@ -46,9 +54,12 @@ public class TunerConstants {
     // The type of motor used for the drive motor
     private static final SteerMotorArrangement kSteerMotorType = SteerMotorArrangement.TalonFX_Integrated;
 
-    // The remote sensor feedback type to use for the steer motors;
-    // When not Pro-licensed, Fused*/Sync* automatically fall back to Remote*
-    private static final SteerFeedbackType kSteerFeedbackType = SteerFeedbackType.FusedCANcoder;
+    // The remote sensor feedback type to use for the steer motors.
+    // RemoteCANcoder, NOT FusedCANcoder: our Krakens are UNLICENSED (confirmed on-robot 2026-07-08 --
+    // netconsole showed "Talon ID 1/4/7/10 failed config: UsingProFeatureOnUnlicensedDevice" at boot,
+    // i.e. the steer configs were being rejected). Fused is Phoenix Pro only; switch back if the team
+    // ever buys a season pass / Pro license.
+    private static final SteerFeedbackType kSteerFeedbackType = SteerFeedbackType.RemoteCANcoder;
 
     // The stator current at which the wheels start to slip;
     // This needs to be tuned to your individual robot
@@ -61,20 +72,31 @@ public class TunerConstants {
         // on disable, instead of coasting on its own momentum (TalonFX default is Coast).
         .withMotorOutput(new MotorOutputConfigs().withNeutralMode(NeutralModeValue.Brake))
         // Supply-current cap = brownout protection for the 4 drive Krakens (draw multiplies x4).
-        // Conservative start (Hardware-Data-Sheet sec.7); the stator/traction cap comes from
-        // kSlipCurrent, which the swerve factory copies into StatorCurrentLimit. TODO tune on robot.
+        // 60 A = Hardware-Data-Sheet sec.7 "Regular" tune target (raised from the 30 A
+        // conservative start for full-speed driving, 2026-07-08); cap is 70 -- do not exceed.
+        // The stator/traction limit comes from kSlipCurrent, which the swerve factory copies
+        // into StatorCurrentLimit. Watch the DS voltage plot on hard accels: if it dips
+        // toward ~7 V (brownout), back this down toward 45.
         .withCurrentLimits(new CurrentLimitsConfigs()
-            .withSupplyCurrentLimit(Amps.of(30))
+            .withSupplyCurrentLimit(Amps.of(60))
+            // Burst-then-fall-back: 60 A is allowed for accelerations, but sustained draw
+            // (pushing matches, stalls) drops to 40 A after 1 s. These match the Phoenix
+            // factory defaults -- written explicitly because they're our battery-efficiency
+            // mechanism, not an accident of defaults.
+            .withSupplyCurrentLowerLimit(Amps.of(40))
+            .withSupplyCurrentLowerTime(Seconds.of(1.0))
             .withSupplyCurrentLimitEnable(true));
     private static final TalonFXConfiguration steerInitialConfigs = new TalonFXConfiguration()
         .withCurrentLimits(
             new CurrentLimitsConfigs()
-                // Swerve azimuth does not require much torque output, so we can set a relatively low
-                // stator current limit to help avoid brownouts without impacting performance.
-                .withStatorCurrentLimit(Amps.of(40))
+                // Steady-state azimuth torque is small, but fast whole-module swings need a burst.
+                // The conservative-start 40/20 caps starved the steer motors during quick rotation /
+                // direction reversals (modules visibly locked mid-swing, on-robot test 2026-07-08).
+                // 60/40 = Hardware-Data-Sheet sec.7 tuned-up ceiling for the steer X44s, and matches
+                // the Tuner X project's own 60 A stator value.
+                .withStatorCurrentLimit(Amps.of(60))
                 .withStatorCurrentLimitEnable(true)
-                // Conservative supply cap for the steer Krakens (Hardware-Data-Sheet sec.7). TODO tune.
-                .withSupplyCurrentLimit(Amps.of(20))
+                .withSupplyCurrentLimit(Amps.of(40))
                 .withSupplyCurrentLimitEnable(true)
         )
         // Brake so the wheels hold their commanded steer angle instead of coasting.
@@ -87,9 +109,12 @@ public class TunerConstants {
     // All swerve devices must share the same CAN bus
     public static final CANBus kCANBus = new CANBus("", "./logs/example.hoot");
 
-    // Theoretical free speed (m/s) at 12 V applied output;
-    // This needs to be tuned to your individual robot
-    public static final LinearVelocity kSpeedAt12Volts = MetersPerSecond.of(4.93);
+    // Free speed (m/s) at 12 V applied output. 4.76 = the Tuner X-measured value from
+    // tuner-project.json (issue register #19); the old 4.93 was theoretical and unreachable,
+    // so full-stick made the drive velocity loop saturate at 12 V chasing a speed it could
+    // never hit -- burning current for zero extra speed and skewing odometry scale by ~3.5%.
+    // TODO confirm with an on-ground measured-distance run.
+    public static final LinearVelocity kSpeedAt12Volts = MetersPerSecond.of(4.76);
 
     // Every 1 rotation of the azimuth results in kCoupleRatio drive motor turns;
     // This may need to be tuned to your individual robot

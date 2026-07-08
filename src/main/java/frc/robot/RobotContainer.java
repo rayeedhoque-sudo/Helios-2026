@@ -28,7 +28,10 @@ import frc.robot.subsystems.misc.HopperSubsystem.HOPPERSTATE;
 
 public class RobotContainer {
     private double MaxSpeed = 1.0 * TunerConstants.kSpeedAt12Volts.in(MetersPerSecond); // kSpeedAt12Volts desired tp speed
-    private double MaxAngularRate = RotationsPerSecond.of(0.75).in(RadiansPerSecond); // 3/4 of a rotation per second max angular velocity
+    // 1.0 rot/s teleop spin rate (physical ceiling ~1.9 rot/s at free speed). Raised from the
+    // 0.75 template default for full-performance driving; push toward 1.5 only if the driver
+    // wants it -- faster spin also demands more from the steer loop (see TunerConstants gains).
+    private double MaxAngularRate = RotationsPerSecond.of(1.0).in(RadiansPerSecond);
 
     /* Setting up bindings for necessary control of the swerve drive platform */
     private final SwerveRequest.FieldCentric drive = new SwerveRequest.FieldCentric()
@@ -106,8 +109,8 @@ public class RobotContainer {
                     // Drivetrain will execute this command periodically.
                     // Pipeline per axis: raw stick -> deadband -> square (shapeAxis) -> slew limit -> scale.
                     drivetrain.applyRequest(() ->
-                        drive.withVelocityX(xSlewLimiter.calculate(shapeAxis(-joystick2.getLeftY())) * MaxSpeed * 0.5) // Forward = negative left-Y (WPILib convention)
-                            .withVelocityY(ySlewLimiter.calculate(shapeAxis(-joystick2.getLeftX())) * MaxSpeed * 0.5) // Left = negative left-X
+                        drive.withVelocityX(xSlewLimiter.calculate(shapeAxis(-joystick2.getLeftY())) * MaxSpeed) // Forward = negative left-Y (WPILib convention)
+                            .withVelocityY(ySlewLimiter.calculate(shapeAxis(-joystick2.getLeftX())) * MaxSpeed) // Left = negative left-X
                             .withRotationalRate(shapeAxis(-joystick2.getRightX()) * MaxAngularRate) // Drive counterclockwise
                     )
                     // Zero the limiters every time the default command (re)starts -- after auto, the
