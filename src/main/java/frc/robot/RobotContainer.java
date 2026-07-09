@@ -62,14 +62,11 @@ public class RobotContainer {
 
     private final CommandXboxController joystick2 = new CommandXboxController(0);
 
+    // Full robot: all subsystems constructed.
     public final CommandSwerveDrivetrain drivetrain = TunerConstants.createDrivetrain();
-    // ---- TEMP: drivetrain-only test -- shooter / intake / hopper DISABLED ----
-    // Only the drivetrain is constructed, so no other subsystem's periodic() runs (this also stops
-    // ShooterSubsystem from driving the hood NEO 550 on enable). To restore the full robot, uncomment
-    // these three fields AND their bindings in configureBindings() (both marked "drivetrain-only test").
-    // public final ShooterSubsystem shoterSS = new ShooterSubsystem(false, drivetrain);
-    // public final IntakeSubsystem intakeSS = new IntakeSubsystem();
-    // public final HopperSubsystem hopperSS = new HopperSubsystem();
+    public final ShooterSubsystem shoterSS = new ShooterSubsystem(false, drivetrain);
+    public final IntakeSubsystem intakeSS = new IntakeSubsystem();
+    public final HopperSubsystem hopperSS = new HopperSubsystem();
 
     public RobotContainer() {
         // Build the auto chooser AFTER the drivetrain constructor has run AutoBuilder.configure.
@@ -122,7 +119,7 @@ public class RobotContainer {
                         ySlewLimiter.reset(0);
                     })
                 );
-                
+
                 //Auto Align -- NOTE: bind with the METHOD REFERENCE (supplier) form so the target
                 // re-samples every loop; passing shoterSS.getDegreesToAlignToTarget() as a double
                 // would freeze whatever the value was at boot (0 deg).
@@ -144,21 +141,29 @@ public class RobotContainer {
 
             drivetrain.registerTelemetry(logger::telemeterize);
 
-        //IntakeSubsystem 
-            // TEMP (drivetrain-only test) -- disabled:
-            // joystick2.rightBumper().whileTrue(intakeSS.intakeCommand()).whileFalse(intakeSS.stowCommand());
-            // joystick2.leftBumper().whileTrue(intakeSS.outtakeCommand()).whileFalse(intakeSS.stowCommand());
+        //IntakeSubsystem
+            // Normal bindings: extend slider (stall-detected) + run rollers; stow on release.
+            // NOTE: slider extend sign is still TODO-verify on robot (IntakeSubsystem.extendSliderCommand).
+            joystick2.rightBumper().whileTrue(intakeSS.intakeCommand()).whileFalse(intakeSS.stowCommand());
+            joystick2.leftBumper().whileTrue(intakeSS.outtakeCommand()).whileFalse(intakeSS.stowCommand());
+            // Roller-only test bindings (kept for reference; conflict with the bumpers above):
+            // joystick2.rightBumper().whileTrue(intakeSS.rollerTestCommand(true));
+            // joystick2.leftBumper().whileTrue(intakeSS.rollerTestCommand(false));
         //Hopper Subsystem
-            // TEMP (drivetrain-only test) -- disabled:
-            // joystick2.x().whileTrue(hopperSS.setHopperState(HOPPERSTATE.RUN)).onFalse(hopperSS.setHopperState(HOPPERSTATE.STOW));
+            // Belt DIRECTION TEST bindings (D-pad up/down = motor A/B at 5% duty). Run these FIRST:
+            // the two hopper NEOs share one gearbox and their relative inversion is NOT set in code
+            // (it relies on whatever is flashed on the SPARK MAXes) -- verify before using X/RUN.
+            joystick2.povUp().whileTrue(hopperSS.directionTest(true));
+            joystick2.povDown().whileTrue(hopperSS.directionTest(false));
+            // WARNING: if the belt directions are wrong, RUN pins both NEOs at their 20 A limit
+            // (motors fighting through the shared gearbox). Verify with the D-pad test first.
+            joystick2.x().whileTrue(hopperSS.setHopperState(HOPPERSTATE.RUN)).onFalse(hopperSS.setHopperState(HOPPERSTATE.STOW));
         // Shooter Subsystem
-
-            // TEMP (drivetrain-only test) -- disabled:
-            // joystick2.rightTrigger().whileTrue(
-            //     shoterSS.enableLiveData(true)
-            // ).whileFalse(
-            //     shoterSS.enableLiveData(false)
-            // );
+            joystick2.rightTrigger().whileTrue(
+                shoterSS.enableLiveData(true)
+            ).whileFalse(
+                shoterSS.enableLiveData(false)
+            );
     }
 
     public Command getAutonomousCommand() {

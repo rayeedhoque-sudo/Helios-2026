@@ -9,7 +9,9 @@ import com.revrobotics.PersistMode;
 import com.revrobotics.spark.SparkMax;
 import com.revrobotics.spark.config.SparkBaseConfig.IdleMode;
 import com.revrobotics.spark.config.SparkMaxConfig;
+import edu.wpi.first.math.filter.Debouncer;
 import edu.wpi.first.networktables.GenericEntry;
+import edu.wpi.first.wpilibj.Timer;
 import edu.wpi.first.wpilibj.shuffleboard.Shuffleboard;
 import edu.wpi.first.wpilibj.shuffleboard.ShuffleboardTab;
 import edu.wpi.first.wpilibj2.command.Command;
@@ -44,6 +46,11 @@ public class IntakeSubsystem extends SubsystemBase {
     
     // //Sensors
         Sensors sensors = new Sensors();
+
+    //Slider stall detection (measured current, not commanded output)
+        private final Debouncer sliderStallDebouncer =
+            new Debouncer(IntakeSubsystemConstants.SLIDER_STALL_DEBOUNCE_SEC, Debouncer.DebounceType.kRising);
+        private final Timer sliderMoveTimer = new Timer();
 
     public IntakeSubsystem(){
 
@@ -83,26 +90,53 @@ public class IntakeSubsystem extends SubsystemBase {
                 intakeMotor.set(-IntakeSubsystemConstants.OUTTAKE_SPEED);
         }
 
-        public boolean isIntakeSliderStall(){
-            return Math.abs(intakeSliderMotor.get()) < IntakeSubsystemConstants.STALL_SPEED && (intakeSliderMotor.get() > 0);
+        // True while the slider motor draws stall-level current (measured, not commanded).
+        public boolean isIntakeSliderStalled(){
+            return intakeSliderMotor.getOutputCurrent() > IntakeSubsystemConstants.SLIDER_STALL_AMPS;
         }
 
     //Command Based methods
 
+        // Drive the slider until it hits a hard stop (debounced stall current), then stop
+        // the motor instantly. Grace period skips the startup inrush; timeout is a backstop
+        // so the motor can never sit stalled if detection misses. Brake mode holds position
+        // at zero current afterward.
+        private Command moveSliderUntilStall(double speed){
+            return Commands.startEnd(
+                    ()->{
+                        sliderMoveTimer.restart();
+                        intakeSliderMotor.set(speed);
+                    },
+                    ()-> intakeSliderMotor.stopMotor(),
+                    this)
+                .until(()->
+                    sliderStallDebouncer.calculate(isIntakeSliderStalled())
+                        && sliderMoveTimer.hasElapsed(IntakeSubsystemConstants.SLIDER_GRACE_SEC))
+                .withTimeout(IntakeSubsystemConstants.SLIDER_MOVE_TIMEOUT_SEC);
+        }
+
+        // Extend the intake slider out until the hard stop. TODO verify sign on robot
+        // (negative = extend, matching the old deploy direction).
+        public Command extendSliderCommand(){
+            return moveSliderUntilStall(-IntakeSubsystemConstants.SLIDER_TRAVEL_SPEED);
+        }
+
+        // Retract (de-extend) the intake slider until the hard stop.
+        public Command retractSliderCommand(){
+            return moveSliderUntilStall(IntakeSubsystemConstants.SLIDER_TRAVEL_SPEED);
+        }
+
+        // ROLLER-ONLY TEST: spin the rollers (Kraken X44, CAN 18) while held, stop on release.
+        // Never commands the slider -- it stays wherever it is (brake mode holds it).
+        public Command rollerTestCommand(boolean inward){
+            return startEnd(
+                ()-> desiredState = inward ? IntakeSSTATE.INTAKE_STATE : IntakeSSTATE.OUTTAKE_STATE,
+                ()-> desiredState = IntakeSSTATE.STOW_STATE);
+        }
+
         public Command intakeCommand(){
             return Commands.sequence(
-                    Commands.runOnce(()->{
-                        intakeSliderMotor.set(-0.5);
-                    }),
-                    Commands.race(
-                        Commands.waitUntil(()->
-                            isIntakeSliderStall()
-                        ), 
-                        Commands.waitSeconds(1)
-                    ),
-                    Commands.runOnce(()->{
-                        intakeSliderMotor.set(0);
-                    }),
+                    extendSliderCommand(),
                     Commands.runOnce(()->{
                         desiredState = IntakeSSTATE.INTAKE_STATE;
                     })
@@ -111,18 +145,7 @@ public class IntakeSubsystem extends SubsystemBase {
 
         public Command outtakeCommand(){
             return Commands.sequence(
-                    Commands.runOnce(()->{
-                        intakeSliderMotor.set(-0.5);
-                    }),
-                    Commands.race(
-                        Commands.waitUntil(()->
-                            isIntakeSliderStall()
-                        ), 
-                        Commands.waitSeconds(1)
-                    ),
-                    Commands.runOnce(()->{
-                        intakeSliderMotor.set(0);
-                    }),
+                    extendSliderCommand(),
                     Commands.runOnce(()->{
                         desiredState = IntakeSSTATE.OUTTAKE_STATE;
                     })
@@ -130,40 +153,14 @@ public class IntakeSubsystem extends SubsystemBase {
         }
 
         public Command stowCommand(){
-            return Commands.parallel(
-                Commands.runOnce(()->{
-                    desiredState = IntakeSSTATE.STOW_STATE;
-                }),
-                Commands.sequence(
-                    Commands.runOnce(()->{
-                        intakeSliderMotor.set(0.5);
-                    }),
-                    Commands.race(
-                        Commands.waitUntil(()->
-                            isIntakeSliderStall()
-                        ), 
-                        Commands.waitSeconds(1)
-                    ),
-                    Commands.runOnce(()->{
-                        intakeSliderMotor.set(0);
-                    })
-                )
-            );
-        }
-        public Command stowSliderCommand(){
             return Commands.sequence(
-              Commands.runOnce(()->{
-                intakeSliderMotor.set(-0.25);
-               }),
-               Commands.waitUntil(()->
-                isIntakeSliderStall()
-               ),
-               Commands.runOnce(()->{
-                intakeSliderMotor.set(0);
-               })
+                    Commands.runOnce(()->{
+                        desiredState = IntakeSSTATE.STOW_STATE;
+                    }),
+                    retractSliderCommand()
             );
         }
-        
+
 
     @Override
         public void periodic(){

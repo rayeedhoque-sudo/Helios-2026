@@ -61,11 +61,19 @@ public class SubsystemConstants {
 
             //HARDWARE CONSTANTS
 
-                public static final double STALL_SPEED = 0.05;
+                // Slider stall detection (NEO 2.0 on SPARK MAX, measured getOutputCurrent).
+                // Free travel is a few amps; against the hard stop the 20 A smart limit pins it.
+                public static final double SLIDER_STALL_AMPS = 15;          // TODO tune on robot
+                public static final double SLIDER_STALL_DEBOUNCE_SEC = 0.15;
+                public static final double SLIDER_GRACE_SEC = 0.25;         // ignore inrush at move start
+                public static final double SLIDER_MOVE_TIMEOUT_SEC = 1.5;   // backstop; TODO measure real travel time
+                public static final double SLIDER_TRAVEL_SPEED = 0.3;       // duty cycle, conservative
 
             //SPEED CONSTANTS
-                public static final double INTAKE_SPEED = 0.25;
-                public static final double OUTTAKE_SPEED = 0.25;
+                // 50% duty roller test. Safe under the existing conservative limits: a jam is
+                // capped at 30 A stator / 20 A supply regardless of duty cycle.
+                public static final double INTAKE_SPEED = 0.5;
+                public static final double OUTTAKE_SPEED = 0.5;
 
             //PID - Slider
                 public static double INTAKE_SLIDER_kP = 0;
@@ -86,6 +94,9 @@ public class SubsystemConstants {
             //SPEED CONSTANTS
                 public static final double INDEXER_SPEED = 0.75;
                 public static final double HOPPER_SPEED = 0.8;
+                // Belt direction test: 5% duty ~= 285 rpm motor / ~24 rpm at rollers (12:1).
+                // Bump to 0.10 if belt friction keeps it from moving.
+                public static final double DIRECTION_TEST_SPEED = 0.05;
         }
 
         public static class ShooterSubsystemConstants{

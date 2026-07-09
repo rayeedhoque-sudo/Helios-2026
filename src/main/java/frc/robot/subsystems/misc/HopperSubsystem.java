@@ -1,9 +1,8 @@
 package frc.robot.subsystems.misc;
 
-import com.ctre.phoenix6.configs.CurrentLimitsConfigs;
-import com.ctre.phoenix6.configs.MotorOutputConfigs;
-import com.ctre.phoenix6.hardware.TalonFX;
-import com.ctre.phoenix6.signals.NeutralModeValue;
+import com.ctre.phoenix.motorcontrol.ControlMode;
+import com.ctre.phoenix.motorcontrol.NeutralMode;
+import com.ctre.phoenix.motorcontrol.can.VictorSPX;
 import com.revrobotics.ResetMode;
 import com.revrobotics.PersistMode;
 import com.revrobotics.spark.SparkMax;
@@ -27,7 +26,9 @@ public class HopperSubsystem extends SubsystemBase{
         private final SparkMax hopperMotorB = new SparkMax( HopperSubsystemConstants.HOPPER_ID_B, com.revrobotics.spark.SparkLowLevel.MotorType.kBrushless);
     
     //Index Motor
-        private final TalonFX kickerMotor = new TalonFX(HopperSubsystemConstants.KICKER_MOTOR_ID);
+        // CAN 17 is a VICTOR SPX (team CAN chart 2026-07-08, staying this season), NOT the
+        // Kraken X60 the CAD showed. Victor SPX = Phoenix 5, brushed motors only.
+        private final VictorSPX kickerMotor = new VictorSPX(HopperSubsystemConstants.KICKER_MOTOR_ID);
 
     // STATE MACHINES
         public enum HOPPERSTATE {
@@ -58,16 +59,12 @@ public class HopperSubsystem extends SubsystemBase{
             hopperConfig.idleMode(IdleMode.kCoast);
             hopperMotorA.configure(hopperConfig, ResetMode.kNoResetSafeParameters, PersistMode.kPersistParameters);
             hopperMotorB.configure(hopperConfig, ResetMode.kNoResetSafeParameters, PersistMode.kPersistParameters);
-            // Kicker: Kraken X60 - stator 30A / supply 20A, Coast.
-            CurrentLimitsConfigs kickerLimits = new CurrentLimitsConfigs();
-            kickerLimits.StatorCurrentLimit = 30;
-            kickerLimits.StatorCurrentLimitEnable = true;
-            kickerLimits.SupplyCurrentLimit = 20;
-            kickerLimits.SupplyCurrentLimitEnable = true;
-            MotorOutputConfigs kickerOutput = new MotorOutputConfigs();
-            kickerOutput.NeutralMode = NeutralModeValue.Coast;
-            kickerMotor.getConfigurator().apply(kickerLimits);
-            kickerMotor.getConfigurator().apply(kickerOutput);
+            // Kicker: Victor SPX. WARNING - the Victor SPX has NO current sensing, so a current
+            // limit is impossible in software; the breaker is the only stall protection. Ramp
+            // softens inrush. TODO: confirm which brushed motor it drives + its breaker size.
+            kickerMotor.configFactoryDefault();
+            kickerMotor.setNeutralMode(NeutralMode.Coast);
+            kickerMotor.configOpenloopRamp(0.25); // seconds from 0 to full output
 
         //Tracker Variables
             fuelDetectedIndexer = false;
@@ -82,13 +79,34 @@ public class HopperSubsystem extends SubsystemBase{
             desiredVelReachedEntry = HopperSubsystemTab.add("desiredVelocityReached", desiredVelReached).getEntry();
     }
 
+    /**
+     * Direction test: runs ONE hopper motor as slowly as practical (5% duty) while the button is
+     * held, so the belt direction can be checked before setting relative inversion. The other
+     * motor stays in coast and just back-drives through the shared gearbox. Suspends the normal
+     * periodic state machine while active so it can't fight the test output.
+     */
+    public Command directionTest(boolean motorA){
+        SparkMax motor = motorA ? hopperMotorA : hopperMotorB;
+        return runEnd(
+            () -> {
+                directionTestActive = true;
+                motor.set(HopperSubsystemConstants.DIRECTION_TEST_SPEED);
+            },
+            () -> {
+                directionTestActive = false;
+                stopIndex();
+            });
+    }
+
+    private boolean directionTestActive = false;
+
     public void indexFuel(){
         hopperMotorA.set(HopperSubsystemConstants.HOPPER_SPEED);
         hopperMotorB.set(HopperSubsystemConstants.HOPPER_SPEED);
     }
 
     public void kickFuel(){
-        kickerMotor.set(HopperSubsystemConstants.INDEXER_SPEED);
+        kickerMotor.set(ControlMode.PercentOutput, HopperSubsystemConstants.INDEXER_SPEED);
     }
     
     public void stopIndex(){
@@ -97,7 +115,7 @@ public class HopperSubsystem extends SubsystemBase{
     }
 
     public void stopKickFuel(){
-        kickerMotor.set(0);
+        kickerMotor.set(ControlMode.PercentOutput, 0);
     }
 
     public Command setHopperState(HOPPERSTATE state){
@@ -122,7 +140,11 @@ public class HopperSubsystem extends SubsystemBase{
             desiredVelReachedEntry.setBoolean(desiredVelReached);
             desiredAngleReachedEntry.setBoolean(desiredAngleReached);
 
-        //Index Based On State Input
+        //Index Based On State Input (skipped while the direction test owns the motors,
+        //otherwise the STOW branch would fight the test's slow output every loop)
+        if(directionTestActive){
+            return;
+        }
         if(kickState == HOPPERSTATE.RUN){
             indexFuel();
             if(desiredVelReached){
