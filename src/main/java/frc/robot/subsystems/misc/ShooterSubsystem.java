@@ -212,13 +212,39 @@ public class ShooterSubsystem extends SubsystemBase{
             return degreesToAlignToTarget;
         }
 
+        // Shot model (see SHOT MODEL block in ShooterSubsystemConstants for the derivation).
+        // Inputs: horizontal distance to the hub center (m) and the hub opening height above
+        // the CARPET (m). Returns the flywheel SURFACE speed (m/s) that periodic() expects,
+        // or 0 if the target is unreachable at the fixed hood angle (too high / too close to
+        // enter descending, or beyond the motor velocity ceiling) -- returning 0 keeps
+        // desiredVelReached false, so the kicker never feeds a shot that can't land.
         public double generateShooterFlywheelVelocity(double distance, double height){
-            return 0;
+            double deltaH = height - ShooterSubsystemConstants.SHOT_RELEASE_HEIGHT_METERS;
+            double theta = Math.toRadians(ShooterSubsystemConstants.MAX_ANGLE);
+            double reach = distance * Math.tan(theta);
+            // Must cross the target height DESCENDING (past apex): d*tan(theta) > 2*deltaH.
+            if (reach <= 2 * deltaH || distance <= 0) {
+                return 0;
+            }
+            // No-drag closed form for exit speed through (distance, deltaH) at angle theta,
+            // then the drag fudge, then convert ball speed -> commanded surface speed.
+            double cos = Math.cos(theta);
+            double vBall = Math.sqrt(9.81 * distance * distance / (2 * cos * cos * (reach - deltaH)))
+                    * ShooterSubsystemConstants.SHOT_DRAG_FUDGE;
+            double vSurface = vBall / ShooterSubsystemConstants.SHOT_EFFICIENCY;
+            double motorRps = vSurface / (2 * Math.PI * ShooterSubsystemConstants.FLYWHEEL_RADIUS_METERS
+                    * ShooterSubsystemConstants.FLYWHEEL_ROTATIONS_PER_MOTOR_ROTATION);
+            if (motorRps > ShooterSubsystemConstants.SHOT_MAX_MOTOR_RPS) {
+                return 0; // out of range -- refuse rather than lob short into the field
+            }
+            return vSurface;
         }
 
+        // Fixed-angle rule: always shoot at max hood. The unconstrained optimum (~50 deg)
+        // exceeds the 44.5 deg hood, so max hood minimizes required speed and guarantees a
+        // top-down entry everywhere in the 3.7-9 m envelope.
         public double generateAngle(double distance, double height){
-            //Generate mathematical model based on distance and height to target, this is a placeholder and should be replaced with an actual model based on testing
-            return 0.0; // Placeholder return value
+            return ShooterSubsystemConstants.MAX_ANGLE;
         }
 
     //Command Based Methods
@@ -248,8 +274,30 @@ public class ShooterSubsystem extends SubsystemBase{
            return Commands.runOnce(
             ()->{
                 this.enableComp = isEnabled;
+                // Leaving live-data mode: zero the setpoints ONCE here (this used to happen
+                // every loop in periodic(), which also stomped preset shot commands).
+                if (!isEnabled) {
+                    desired_Velocity = 0;
+                    desired_Angle = ShooterSubsystemConstants.MIN_ANGLE;
+                }
             }
             );
+        }
+
+        // Preset: shoot from the mid-field fuel pile into the alliance hub. Fixed max-hood
+        // angle + model velocity for the field-center -> hub-center distance. Pair with
+        // stopShooterCommand() on button release.
+        public Command midFieldShotCommand(){
+            return setAngleAndVelocityCommand(
+                generateAngle(ShooterSubsystemConstants.MIDFIELD_TO_HUB_CENTER_METERS,
+                              ShooterSubsystemConstants.HUB_OPENING_HEIGHT_METERS),
+                generateShooterFlywheelVelocity(ShooterSubsystemConstants.MIDFIELD_TO_HUB_CENTER_METERS,
+                              ShooterSubsystemConstants.HUB_OPENING_HEIGHT_METERS));
+        }
+
+        // Coast the flywheels down and drop the hood to its floor angle.
+        public Command stopShooterCommand(){
+            return setAngleAndVelocityCommand(ShooterSubsystemConstants.MIN_ANGLE, 0);
         }
 
     @Override
@@ -322,13 +370,12 @@ public class ShooterSubsystem extends SubsystemBase{
                 desiredAngleReachedEntry.setBoolean(ShooterSubsystemConstants.desiredAngleReached);
                 debugEntry.setBoolean(enableComp);
             
-            //Physics Lab;
+            //Physics Lab: live-data mode reads setpoints straight off Shuffleboard. No else --
+            // zeroing on exit happens ONCE in enableLiveData(false); an every-loop else here
+            // would stomp preset shot commands (midFieldShotCommand) and vision auto-aim.
                 if(enableComp){
                     desired_Velocity = desiredVelEntry.getDouble(0);
                     desired_Angle = desiredAngleEntry.getDouble(0);
-                } else if(!enableComp) {
-                    desired_Velocity = 0;
-                    desired_Angle = ShooterSubsystemConstants.MIN_ANGLE;
                 }
 
             //PID + FF Tuning
@@ -363,5 +410,15 @@ public class ShooterSubsystem extends SubsystemBase{
                 shooterAngle.setVoltage(0);
                 desired_Velocity = 0;
             }
+    }
+
+    // Read-only motor access for PowerTelemetry (no control).
+    public TalonFX[] getFlywheelMotors(){
+        return new TalonFX[] { shooterA, shooterB, shooterC, shooterD };
+    }
+
+    // Read-only motor access for PowerTelemetry (no control).
+    public SparkMax getHoodMotor(){
+        return shooterAngle;
     }
 }

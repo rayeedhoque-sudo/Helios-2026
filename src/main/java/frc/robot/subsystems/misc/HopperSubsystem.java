@@ -98,7 +98,49 @@ public class HopperSubsystem extends SubsystemBase{
             });
     }
 
+    /**
+     * Both-belt test: runs BOTH hopper motors at the slow test speed (5% duty) while held.
+     * This is the step AFTER the single-motor direction tests -- once each motor's direction is
+     * known, this confirms the two agree before ever using full-speed RUN. If the directions are
+     * wrong the motors fight through the shared gearbox, but at 5% duty the stall current
+     * (~16 A on a NEO) stays under the 20 A smart limit, so it's safe to observe and release.
+     * Suspends the periodic state machine the same way the single-motor test does.
+     */
+    public Command bothBeltsTest(){
+        return runEnd(
+            () -> {
+                directionTestActive = true;
+                hopperMotorA.set(HopperSubsystemConstants.DIRECTION_TEST_SPEED);
+                hopperMotorB.set(HopperSubsystemConstants.DIRECTION_TEST_SPEED);
+            },
+            () -> {
+                directionTestActive = false;
+                stopIndex();
+            });
+    }
+
     private boolean directionTestActive = false;
+
+    /**
+     * UNJAM: reverse both belts AND the kicker while held, to back a jammed ball out.
+     * Reuses the periodic-suspend flag so the STOW branch can't fight the reverse output.
+     * NOTE: belt relative inversion is still unverified in code -- "reverse" is relative to
+     * whatever is flashed on the SPARK MAXes, same caveat as forward RUN.
+     */
+    public Command unjamCommand(){
+        return runEnd(
+            () -> {
+                directionTestActive = true;
+                hopperMotorA.set(-HopperSubsystemConstants.UNJAM_SPEED);
+                hopperMotorB.set(-HopperSubsystemConstants.UNJAM_SPEED);
+                kickerMotor.set(ControlMode.PercentOutput, -HopperSubsystemConstants.UNJAM_SPEED);
+            },
+            () -> {
+                directionTestActive = false;
+                stopIndex();
+                stopKickFuel();
+            });
+    }
 
     public void indexFuel(){
         hopperMotorA.set(HopperSubsystemConstants.HOPPER_SPEED);
@@ -156,5 +198,10 @@ public class HopperSubsystem extends SubsystemBase{
             stopIndex();
             stopKickFuel();
         }
+    }
+
+    // Read-only motor access for PowerTelemetry (no control).
+    public SparkMax[] getHopperMotors(){
+        return new SparkMax[] { hopperMotorA, hopperMotorB };
     }
 }

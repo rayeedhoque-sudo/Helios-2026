@@ -20,6 +20,7 @@ import edu.wpi.first.wpilibj2.command.button.CommandXboxController;
 import edu.wpi.first.wpilibj2.command.button.RobotModeTriggers;
 
 import frc.robot.Constants.TunerConstants;
+import frc.robot.Constants.SubsystemConstants.ShooterSubsystemConstants;
 import frc.robot.commands.CommandSwerveDrivetrain;
 import frc.robot.subsystems.misc.HopperSubsystem;
 import frc.robot.subsystems.misc.IntakeSubsystem;
@@ -69,6 +70,12 @@ public class RobotContainer {
     public final HopperSubsystem hopperSS = new HopperSubsystem();
 
     public RobotContainer() {
+        // Shooter DISABLED (team decision, still in effect 2026-07-10). Subsystem stays
+        // constructed so current limits apply at boot; periodic() coasts the flywheels and
+        // zeroes the hood every loop, and desiredVelReached stays false so the kicker never
+        // fires. Re-enable: delete this call and restore the RB/RT bindings below.
+        shoterSS.disableSubsystem();
+
         // Build the auto chooser AFTER the drivetrain constructor has run AutoBuilder.configure.
         // If PathPlanner config failed to load (see configurePathPlanner), fall back to a
         // do-nothing chooser instead of crashing robot code on boot.
@@ -95,11 +102,14 @@ public class RobotContainer {
         SmartDashboard.putData("Auto Chooser", autoChooser);
 
         configureBindings();
+
+        // Read-only current/temp/voltage publisher for the driver companion app (app optional).
+        new PowerTelemetry(drivetrain, shoterSS, intakeSS, hopperSS);
     }
 
     private void configureBindings() {
         
-        //DRIVE SUBSYSTEM
+        //DRIVE SUBSYSTEM (re-enabled 2026-07-10)
             // Note that X is defined as forward according to WPILib convention,
             // and Y is defined as to the left according to WPILib convention.
                 drivetrain.setDefaultCommand(
@@ -120,10 +130,6 @@ public class RobotContainer {
                     })
                 );
 
-                //Auto Align -- NOTE: bind with the METHOD REFERENCE (supplier) form so the target
-                // re-samples every loop; passing shoterSS.getDegreesToAlignToTarget() as a double
-                // would freeze whatever the value was at boot (0 deg).
-                // joystick2.a().onTrue(drivetrain.rotateToAngle(shoterSS::getDegreesToAlignToTarget));
             // Idle while the robot is disabled. This ensures the configured
             // neutral mode is applied to the drive motors while disabled.
                 final var idle = new SwerveRequest.Idle();
@@ -131,43 +137,64 @@ public class RobotContainer {
                     drivetrain.applyRequest(() -> idle).ignoringDisable(true)
                 );
 
-            //Drive Train Break
-                joystick2.start().whileTrue(drivetrain.applyRequest(() -> brake));
+            // LB = enable/disable X-lock (toggle: press to lock wheels in an X, press to release).
+                joystick2.leftBumper().toggleOnTrue(drivetrain.applyRequest(() -> brake));
 
-            // Reset (re-zero) the field-centric heading with the Y button. Use a dedicated button so
-            // it only fires on a deliberate press -- povCenter() is true whenever the D-pad is at rest,
-            // so the old binding re-seeded heading on any incidental D-pad tap-and-release.
-                joystick2.y().onTrue(drivetrain.runOnce(drivetrain::seedFieldCentric));
+            // MENU = reset pose (re-zero field-centric heading; point robot downfield, press once).
+                joystick2.start().onTrue(drivetrain.runOnce(drivetrain::seedFieldCentric));
+
+            // A = auto align only: rotate to face the hub tag the Limelight sees. Target =
+            // current heading + camera bearing, re-sampled every loop (supplier form). With
+            // vision off/no tag the bearing is 0, so it just holds heading briefly -- harmless.
+                joystick2.a().whileTrue(drivetrain.rotateToAngle(
+                    () -> drivetrain.getState().Pose.getRotation().getDegrees()
+                          + shoterSS.getDegreesToAlignToTarget()));
+                joystick2.povUp().whileTrue(drivetrain.rotateToAngle(
+                    () -> drivetrain.getState().Pose.getRotation().getDegrees()
+                          + shoterSS.getDegreesToAlignToTarget()));
+
+            // D-pad feed positions -- TODO [needs field poses]: left/gen/right feed Pose2d
+            // coordinates are not defined anywhere yet. Wire with drivetrain.driveToPose(pose)
+            // once the team picks the three positions (and verify PathPlanner pathfinding works).
+                // joystick2.povLeft().whileTrue(drivetrain.driveToPose(LEFT_FEED_POSE));
+                // joystick2.povDown().whileTrue(drivetrain.driveToPose(GEN_FEED_POSE));
+                // joystick2.povRight().whileTrue(drivetrain.driveToPose(RIGHT_FEED_POSE));
 
             drivetrain.registerTelemetry(logger::telemeterize);
 
-        //IntakeSubsystem
-            // Normal bindings: extend slider (stall-detected) + run rollers; stow on release.
-            // NOTE: slider extend sign is still TODO-verify on robot (IntakeSubsystem.extendSliderCommand).
-            joystick2.rightBumper().whileTrue(intakeSS.intakeCommand()).whileFalse(intakeSS.stowCommand());
-            joystick2.leftBumper().whileTrue(intakeSS.outtakeCommand()).whileFalse(intakeSS.stowCommand());
-            // Roller-only test bindings (kept for reference; conflict with the bumpers above):
-            // joystick2.rightBumper().whileTrue(intakeSS.rollerTestCommand(true));
-            // joystick2.leftBumper().whileTrue(intakeSS.rollerTestCommand(false));
-        //Hopper Subsystem
-            // Belt DIRECTION TEST bindings (D-pad up/down = motor A/B at 5% duty). Run these FIRST:
-            // the two hopper NEOs share one gearbox and their relative inversion is NOT set in code
-            // (it relies on whatever is flashed on the SPARK MAXes) -- verify before using X/RUN.
-            joystick2.povUp().whileTrue(hopperSS.directionTest(true));
-            joystick2.povDown().whileTrue(hopperSS.directionTest(false));
-            // WARNING: if the belt directions are wrong, RUN pins both NEOs at their 20 A limit
-            // (motors fighting through the shared gearbox). Verify with the D-pad test first.
-            joystick2.x().whileTrue(hopperSS.setHopperState(HOPPERSTATE.RUN)).onFalse(hopperSS.setHopperState(HOPPERSTATE.STOW));
-        // Shooter Subsystem
-            joystick2.rightTrigger().whileTrue(
-                shoterSS.enableLiveData(true)
-            ).whileFalse(
-                shoterSS.enableLiveData(false)
-            );
+        //Intake (competition layout 2026-07-10: press-to-start, X stops everything)
+            // HOPPER DISABLED: the hopper halves of LT/X and the B/VIEW bindings are commented
+            // out below -- hopper state stays STOW, periodic() holds belts + kicker stopped.
+            // LT = intake: extend slider + rollers in. Runs until X. (Hopper feed disabled.)
+            joystick2.leftTrigger().onTrue(intakeSS.intakeCommand());
+            // joystick2.leftTrigger().onTrue(Commands.parallel(
+            //     intakeSS.intakeCommand(),
+            //     hopperSS.setHopperState(HOPPERSTATE.RUN)));
+            // Y = outtake on intake: extend slider + rollers out (no hopper). Runs until X.
+            joystick2.y().onTrue(intakeSS.outtakeCommand());
+            // X = intake stop and stow: rollers off, slider retracted.
+            joystick2.x().onTrue(intakeSS.stowCommand());
+            // joystick2.x().onTrue(Commands.parallel(
+            //     intakeSS.stowCommand(),
+            //     hopperSS.setHopperState(HOPPERSTATE.STOW)));
+        //Hopper -- DISABLED. Re-enable: restore these + the LT/X hopper composites above.
+            // WARNING when re-enabling B: belt relative inversion is STILL unverified in code
+            // (flashed on the SPARK MAXes) -- if the belts fight, both NEOs pin their 20 A limit.
+            // joystick2.b().onTrue(hopperSS.setHopperState(HOPPERSTATE.RUN))
+            //              .onFalse(hopperSS.setHopperState(HOPPERSTATE.STOW));
+            // joystick2.back().whileTrue(hopperSS.unjamCommand());
+        //Shooter -- DISABLED (see disableSubsystem() in the constructor). Re-enable bindings:
+            // RB = manual shoot (hold): fixed setpoint -- max hood + SHOOTER_HIGH_SPEED.
+            // joystick2.rightBumper().whileTrue(shoterSS.setAngleAndVelocityCommand(
+            //         ShooterSubsystemConstants.MAX_ANGLE, ShooterSubsystemConstants.SHOOTER_HIGH_SPEED))
+            //     .onFalse(shoterSS.stopShooterCommand());
+            // RT = auto shoot (hold): ballistics-model shot for the mid-field -> hub distance.
+            // joystick2.rightTrigger().whileTrue(shoterSS.midFieldShotCommand())
+            //     .onFalse(shoterSS.stopShooterCommand());
     }
 
     public Command getAutonomousCommand() {
-        // Run whatever auto the drive team picked on the dashboard (defaults to "Auto PID").
+        // Run whatever auto the drive team picked on the dashboard (chooser defaults to "None").
         Command selected = autoChooser.getSelected();
         return (selected != null) ? selected : Commands.none();
     }

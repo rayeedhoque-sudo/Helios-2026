@@ -124,8 +124,15 @@ public class TunerConstants {
     private static final double kSteerGearRatio = 12.1;
     private static final Distance kWheelRadius = Inches.of(2);
 
-    private static final boolean kInvertLeftSide = false;
-    private static final boolean kInvertRightSide = true;
+    // ROBOT FRONT REDEFINED = SHOOTER SIDE (2026-07-10, team request). The Tuner X project
+    // was generated with the opposite side as front, so the chassis frame is rotated 180 deg
+    // here: module labels swapped diagonally (FL<->BR, FR<->BL, each keeping its own
+    // motor/encoder IDs and steer/encoder inversions), every CANcoder offset shifted by
+    // exactly +/-0.5 rot, and the left/right drive inversions swapped. If you REGENERATE
+    // with Tuner X, its output restores the old front -- reapply this transform (or set the
+    // correct front in the generator).
+    private static final boolean kInvertLeftSide = true;
+    private static final boolean kInvertRightSide = false;
  
     private static final int kPigeonId = 23;
 
@@ -165,44 +172,44 @@ public class TunerConstants {
             .withDriveFrictionVoltage(kDriveFrictionVoltage);
 
 
-    // Front Left
-    private static final int kFrontLeftDriveMotorId = 11;
-    private static final int kFrontLeftSteerMotorId = 10;
-    private static final int kFrontLeftEncoderId = 12;
-    private static final Angle kFrontLeftEncoderOffset = Rotations.of(-0.193359375);
+    // Front Left (physically the pre-flip Back Right hardware)
+    private static final int kFrontLeftDriveMotorId = 8;
+    private static final int kFrontLeftSteerMotorId = 7;
+    private static final int kFrontLeftEncoderId = 9;
+    private static final Angle kFrontLeftEncoderOffset = Rotations.of(0.2099609375); // -0.2900390625 + 0.5
     private static final boolean kFrontLeftSteerMotorInverted = true;
     private static final boolean kFrontLeftEncoderInverted = false;
 
     private static final Distance kFrontLeftXPos = Inches.of(13.375);
     private static final Distance kFrontLeftYPos = Inches.of(8.375);
 
-    // Front Right
-    private static final int kFrontRightDriveMotorId = 5;
-    private static final int kFrontRightSteerMotorId = 4;
-    private static final int kFrontRightEncoderId = 6;
-    private static final Angle kFrontRightEncoderOffset = Rotations.of(0.4541015625);
+    // Front Right (physically the pre-flip Back Left hardware)
+    private static final int kFrontRightDriveMotorId = 2;
+    private static final int kFrontRightSteerMotorId = 1;
+    private static final int kFrontRightEncoderId = 3;
+    private static final Angle kFrontRightEncoderOffset = Rotations.of(-0.149169921875); // 0.350830078125 - 0.5
     private static final boolean kFrontRightSteerMotorInverted = true;
     private static final boolean kFrontRightEncoderInverted = false;
 
     private static final Distance kFrontRightXPos = Inches.of(13.375);
     private static final Distance kFrontRightYPos = Inches.of(-8.375);
 
-    // Back Left
-    private static final int kBackLeftDriveMotorId = 2;
-    private static final int kBackLeftSteerMotorId = 1;
-    private static final int kBackLeftEncoderId = 3;
-    private static final Angle kBackLeftEncoderOffset = Rotations.of(0.350830078125);
+    // Back Left (physically the pre-flip Front Right hardware)
+    private static final int kBackLeftDriveMotorId = 5;
+    private static final int kBackLeftSteerMotorId = 4;
+    private static final int kBackLeftEncoderId = 6;
+    private static final Angle kBackLeftEncoderOffset = Rotations.of(-0.0458984375); // 0.4541015625 - 0.5
     private static final boolean kBackLeftSteerMotorInverted = true;
     private static final boolean kBackLeftEncoderInverted = false;
 
     private static final Distance kBackLeftXPos = Inches.of(-13.375);
     private static final Distance kBackLeftYPos = Inches.of(8.375);
 
-    // Back Right
-    private static final int kBackRightDriveMotorId = 8;
-    private static final int kBackRightSteerMotorId = 7;
-    private static final int kBackRightEncoderId = 9;
-    private static final Angle kBackRightEncoderOffset = Rotations.of(-0.2900390625);
+    // Back Right (physically the pre-flip Front Left hardware)
+    private static final int kBackRightDriveMotorId = 11;
+    private static final int kBackRightSteerMotorId = 10;
+    private static final int kBackRightEncoderId = 12;
+    private static final Angle kBackRightEncoderOffset = Rotations.of(0.306640625); // -0.193359375 + 0.5
     private static final boolean kBackRightSteerMotorInverted = true;
     private static final boolean kBackRightEncoderInverted = false;
 
