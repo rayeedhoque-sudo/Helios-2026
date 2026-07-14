@@ -59,10 +59,9 @@ public class SubsystemConstants {
             public static final int INTAKE_MOTOR_ID = 18;
             public static final int INTAKE_PIVOT_MOTOR_ID = 22;
 
-            // Slider DISABLED (team decision 2026-07-12): moveSliderUntilStall() no-ops,
-            // so intake/outtake/stow run rollers-only and never command the slider motor
-            // (brake idle mode holds whatever position it's in). Re-enable: set true.
-            public static final boolean SLIDER_ENABLED = false;
+            // Slider re-enabled 2026-07-13. Set false to make moveSliderUntilStall() no-op
+            // (intake/outtake/stow run rollers-only; brake idle mode holds position).
+            public static final boolean SLIDER_ENABLED = true;
 
             //HARDWARE CONSTANTS
 

@@ -70,7 +70,7 @@ public class RobotContainer {
     public final HopperSubsystem hopperSS = new HopperSubsystem();
 
     public RobotContainer() {
-        // Shooter DISABLED (team decision, still in effect 2026-07-10). Subsystem stays
+        // Shooter DISABLED (team decision, still in effect 2026-07-13). Subsystem stays
         // constructed so current limits apply at boot; periodic() coasts the flywheels and
         // zeroes the hood every loop, and desiredVelReached stays false so the kicker never
         // fires. Re-enable: delete this call and restore the RB/RT bindings below.
@@ -170,8 +170,7 @@ public class RobotContainer {
         //Intake (competition layout 2026-07-10: press-to-start, X stops everything)
             // HOPPER DISABLED: the hopper halves of LT/X and the B/VIEW bindings are commented
             // out below -- hopper state stays STOW, periodic() holds belts + kicker stopped.
-            // SLIDER DISABLED (2026-07-12): SLIDER_ENABLED=false in IntakeSubsystemConstants,
-            // so the extend/retract halves of LT/Y/X are no-ops -- rollers only.
+            // Slider re-enabled 2026-07-13 (SLIDER_ENABLED=true), so LT/Y/X move it again.
             // LT = intake: extend slider + rollers in. Runs until X. (Hopper feed disabled.)
             joystick2.leftTrigger().onTrue(intakeSS.intakeCommand());
             // joystick2.leftTrigger().onTrue(Commands.parallel(

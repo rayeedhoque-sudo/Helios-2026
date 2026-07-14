@@ -134,8 +134,8 @@ public class IntakeSubsystem extends SubsystemBase {
         // skips the startup inrush; timeout is a backstop so the motor can never sit stalled
         // if detection misses. Brake mode holds position at zero current afterward.
         private Command moveSliderUntilStall(double motorRpm){
-            // Slider disabled (team decision 2026-07-12): every slider move routes through
-            // here, so this one guard keeps the motor untouched while rollers still work.
+            // Every slider move routes through here, so this one guard disables the slider
+            // (motor untouched, rollers still work) when SLIDER_ENABLED is false.
             if (!IntakeSubsystemConstants.SLIDER_ENABLED) {
                 return Commands.none();
             }
