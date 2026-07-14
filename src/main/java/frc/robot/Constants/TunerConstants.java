@@ -72,19 +72,22 @@ public class TunerConstants {
         // on disable, instead of coasting on its own momentum (TalonFX default is Coast).
         .withMotorOutput(new MotorOutputConfigs().withNeutralMode(NeutralModeValue.Brake))
         // Supply-current cap = brownout protection for the 4 drive Krakens (draw multiplies x4).
-        // 60 A = Hardware-Data-Sheet sec.7 "Regular" tune target (raised from the 30 A
-        // conservative start for full-speed driving, 2026-07-08); cap is 70 -- do not exceed.
+        // Backed down 60 -> 45 A per this comment's own guidance (2026-07-12): NT captures
+        // measured drive accel/turn spikes summing to 177 A supply, dipping the battery to
+        // 7.0-7.4 V (companion-app BROWNOUT RISK events). 45 A x4 caps the drivetrain burst
+        // at ~135 A. NOTE: the battery that session RESTED at 11.5 V (discharged/tired) and
+        // sagged ~4 V at 84-130 A -- current limits alone cannot save a weak battery; charge/
+        // load-test/swap it and check main-power connections before blaming these numbers.
         // The stator/traction limit comes from kSlipCurrent, which the swerve factory copies
-        // into StatorCurrentLimit. Watch the DS voltage plot on hard accels: if it dips
-        // toward ~7 V (brownout), back this down toward 45.
+        // into StatorCurrentLimit. If accel feels soft WITH a fresh battery, raise toward 60;
+        // hardware sheet cap is 70 -- do not exceed.
         .withCurrentLimits(new CurrentLimitsConfigs()
-            .withSupplyCurrentLimit(Amps.of(60))
-            // Burst-then-fall-back: 60 A is allowed for accelerations, but sustained draw
-            // (pushing matches, stalls) drops to 40 A after 1 s. These match the Phoenix
-            // factory defaults -- written explicitly because they're our battery-efficiency
-            // mechanism, not an accident of defaults.
-            .withSupplyCurrentLowerLimit(Amps.of(40))
-            .withSupplyCurrentLowerTime(Seconds.of(1.0))
+            .withSupplyCurrentLimit(Amps.of(45))
+            // Burst-then-fall-back: 45 A is allowed for accelerations, but sustained draw
+            // (pushing matches, stalls) drops to 30 A after 0.5 s -- our battery-efficiency
+            // mechanism (tightened from 60/40/1.0 after the measured 2026-07-12 dips).
+            .withSupplyCurrentLowerLimit(Amps.of(30))
+            .withSupplyCurrentLowerTime(Seconds.of(0.5))
             .withSupplyCurrentLimitEnable(true));
     private static final TalonFXConfiguration steerInitialConfigs = new TalonFXConfiguration()
         .withCurrentLimits(

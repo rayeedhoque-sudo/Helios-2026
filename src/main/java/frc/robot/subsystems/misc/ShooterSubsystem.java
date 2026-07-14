@@ -152,8 +152,11 @@ public class ShooterSubsystem extends SubsystemBase{
                 shooterAngle_kP = ShooterSubsystemTab.add("SHOOTER ANGLE KP", shooterAnglePID.getP()).getEntry();
                 shooterAngle_kI = ShooterSubsystemTab.add("SHOOTER ANGLE KI", shooterAnglePID.getI()).getEntry();
                 shooterAngle_kD = ShooterSubsystemTab.add("SHOOTER ANGLE KD", shooterAnglePID.getD()).getEntry();
-                desiredVelReachedEntry = ShooterSubsystemTab.add("Desired Velocity Reached", true).getEntry();
-                desiredAngleReachedEntry = ShooterSubsystemTab.add("Desired Angle Reached", true).getEntry();
+                // Initialized false: with the subsystem disabled at boot these entries were
+                // never written again, so a `true` here showed "At Speed: YES" on dashboards
+                // while the flywheels coasted.
+                desiredVelReachedEntry = ShooterSubsystemTab.add("Desired Velocity Reached", false).getEntry();
+                desiredAngleReachedEntry = ShooterSubsystemTab.add("Desired Angle Reached", false).getEntry();
                 debugEntry = ShooterSubsystemTab.add("Debug Field", true).getEntry();
        }
 
@@ -350,26 +353,17 @@ public class ShooterSubsystem extends SubsystemBase{
                   setDesired_Angle(0 );
                 }
             }
-            //Data
-                currentVelEntry.setDouble(getShooterFlywheelVelocity());
-                // desiredVelEntry.setDouble(desired_VelocityRPS);
-                currentAngleEntry.setDouble(getShooterAngleDegrees());
-                // desiredAngleEntry.setDouble(desired_Angle);
-                targetDistanceEntry.setDouble(target_distance);
-                targetHeightEntry.setDouble(target_height);
-                subsystemStateEntry.setBoolean(enableSubsystem);
-                visionStateEntry.setBoolean(enableVision);
-                degreedToAlignToTargEntry.setDouble(degreesToAlignToTarget);
+            //Data (tuning entries only -- these double as dashboard INPUTS below, so they
+            // are written only while enabled; the read-only status entries moved to the
+            // always-published block at the bottom of periodic()).
                 shooterSpeed_kP.setDouble(shooterVelConfigs.kP);
                 shooterSpeed_kD.setDouble(shooterVelConfigs.kD);
                 shooterSpeed_kV.setDouble(shooterVelConfigs.kV);
                 shooterAngle_kP.setDouble(shooterAnglePID.getP());
                 shooterAngle_kI.setDouble(shooterAnglePID.getI());
                 shooterAngle_kD.setDouble(shooterAnglePID.getD());
-                desiredVelReachedEntry.setBoolean(ShooterSubsystemConstants.desiredVelReached);
-                desiredAngleReachedEntry.setBoolean(ShooterSubsystemConstants.desiredAngleReached);
                 debugEntry.setBoolean(enableComp);
-            
+
             //Physics Lab: live-data mode reads setpoints straight off Shuffleboard. No else --
             // zeroing on exit happens ONCE in enableLiveData(false); an every-loop else here
             // would stomp preset shot commands (midFieldShotCommand) and vision auto-aim.
@@ -409,6 +403,31 @@ public class ShooterSubsystem extends SubsystemBase{
                 shooterA.setControl(m_flywheelCoast);
                 shooterAngle.setVoltage(0);
                 desired_Velocity = 0;
+                // Drop the kicker gates too: these statics latch the last enabled-loop value,
+                // and the hopper's kicker fires on desiredVelReached -- a disable mid-shot must
+                // never leave it true while the flywheels coast down.
+                ShooterSubsystemConstants.desiredVelReached = false;
+                ShooterSubsystemConstants.desiredAngleReached = false;
+            }
+
+        //Data -- read-only status, published EVERY loop (enabled or not) so dashboards
+        // never show stale state (the old enabled-only write froze "Subsystem State" /
+        // "Desired Velocity Reached" at their boot values while disabled).
+            currentVelEntry.setDouble(getShooterFlywheelVelocity());
+            currentAngleEntry.setDouble(getShooterAngleDegrees());
+            targetDistanceEntry.setDouble(target_distance);
+            targetHeightEntry.setDouble(target_height);
+            subsystemStateEntry.setBoolean(enableSubsystem);
+            visionStateEntry.setBoolean(enableVision);
+            degreedToAlignToTargEntry.setDouble(degreesToAlignToTarget);
+            desiredVelReachedEntry.setBoolean(ShooterSubsystemConstants.desiredVelReached);
+            desiredAngleReachedEntry.setBoolean(ShooterSubsystemConstants.desiredAngleReached);
+            // Desired Velocity/Angle double as INPUTS in live-data mode (enableComp reads
+            // them back above) -- only echo the real setpoints when NOT in that mode, so a
+            // dashboard edit is never stomped mid-tune.
+            if (!enableComp) {
+                desiredVelEntry.setDouble(desired_Velocity);
+                desiredAngleEntry.setDouble(desired_Angle);
             }
     }
 

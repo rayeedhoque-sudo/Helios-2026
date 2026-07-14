@@ -59,6 +59,11 @@ public class SubsystemConstants {
             public static final int INTAKE_MOTOR_ID = 18;
             public static final int INTAKE_PIVOT_MOTOR_ID = 22;
 
+            // Slider DISABLED (team decision 2026-07-12): moveSliderUntilStall() no-ops,
+            // so intake/outtake/stow run rollers-only and never command the slider motor
+            // (brake idle mode holds whatever position it's in). Re-enable: set true.
+            public static final boolean SLIDER_ENABLED = false;
+
             //HARDWARE CONSTANTS
 
                 // Slider stall detection (NEO 2.0 on SPARK MAX, measured getOutputCurrent).

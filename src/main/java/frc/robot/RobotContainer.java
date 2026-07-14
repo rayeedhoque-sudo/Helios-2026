@@ -108,7 +108,10 @@ public class RobotContainer {
     }
 
     private void configureBindings() {
-        
+        // NOTE: the driver-companion "Controls" panel (driver-companion/src/renderer/
+        // panels.ts, CONTROLS table) mirrors these bindings by hand — update it when
+        // changing anything here.
+
         //DRIVE SUBSYSTEM (re-enabled 2026-07-10)
             // Note that X is defined as forward according to WPILib convention,
             // and Y is defined as to the left according to WPILib convention.
@@ -156,6 +159,8 @@ public class RobotContainer {
             // D-pad feed positions -- TODO [needs field poses]: left/gen/right feed Pose2d
             // coordinates are not defined anywhere yet. Wire with drivetrain.driveToPose(pose)
             // once the team picks the three positions (and verify PathPlanner pathfinding works).
+            // NOTE: DPAD left/down/right are TEMPORARILY used by the hopper direction test below;
+            // remove those test bindings before wiring feed poses here.
                 // joystick2.povLeft().whileTrue(drivetrain.driveToPose(LEFT_FEED_POSE));
                 // joystick2.povDown().whileTrue(drivetrain.driveToPose(GEN_FEED_POSE));
                 // joystick2.povRight().whileTrue(drivetrain.driveToPose(RIGHT_FEED_POSE));
@@ -165,6 +170,8 @@ public class RobotContainer {
         //Intake (competition layout 2026-07-10: press-to-start, X stops everything)
             // HOPPER DISABLED: the hopper halves of LT/X and the B/VIEW bindings are commented
             // out below -- hopper state stays STOW, periodic() holds belts + kicker stopped.
+            // SLIDER DISABLED (2026-07-12): SLIDER_ENABLED=false in IntakeSubsystemConstants,
+            // so the extend/retract halves of LT/Y/X are no-ops -- rollers only.
             // LT = intake: extend slider + rollers in. Runs until X. (Hopper feed disabled.)
             joystick2.leftTrigger().onTrue(intakeSS.intakeCommand());
             // joystick2.leftTrigger().onTrue(Commands.parallel(
@@ -183,6 +190,14 @@ public class RobotContainer {
             // joystick2.b().onTrue(hopperSS.setHopperState(HOPPERSTATE.RUN))
             //              .onFalse(hopperSS.setHopperState(HOPPERSTATE.STOW));
             // joystick2.back().whileTrue(hopperSS.unjamCommand());
+
+        //Hopper DIRECTION TEST (enabled 2026-07-12) -- slow 5% duty, hold to run, release to stop.
+            // Order: DPAD-LEFT (motor A alone), DPAD-RIGHT (motor B alone), note each belt's
+            // direction; then DPAD-DOWN (both) to confirm they agree before any full-speed RUN.
+            // Safe even if they disagree: 5% duty stall stays under the 20 A smart limit.
+            joystick2.povLeft().whileTrue(hopperSS.directionTest(true));   // motor A, CAN 20 (front)
+            joystick2.povRight().whileTrue(hopperSS.directionTest(false)); // motor B, CAN 21 (back)
+            joystick2.povDown().whileTrue(hopperSS.bothBeltsTest());       // both belts together
         //Shooter -- DISABLED (see disableSubsystem() in the constructor). Re-enable bindings:
             // RB = manual shoot (hold): fixed setpoint -- max hood + SHOOTER_HIGH_SPEED.
             // joystick2.rightBumper().whileTrue(shoterSS.setAngleAndVelocityCommand(
