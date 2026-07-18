@@ -54,17 +54,20 @@ public class PowerTelemetry {
     private final BaseStatusSignal[] statorSignals;
     private final BaseStatusSignal[] supplySignals;
     private final BaseStatusSignal[] tempSignals;
-    private final BaseStatusSignal[] allSignals; // stator+supply+temp, for refreshAll()
+    private final BaseStatusSignal[] voltSignals;
+    private final BaseStatusSignal[] allSignals; // stator+supply+temp+volts, for refreshAll()
 
     // Preallocated publish buffers, index-aligned with NAMES -- reused every cycle.
     private final double[] statorAmps = new double[NUM_MOTORS];
     private final double[] supplyAmps = new double[NUM_MOTORS];
     private final double[] tempCelsius = new double[NUM_MOTORS];
+    private final double[] motorVolts = new double[NUM_MOTORS];
 
     private final StringArrayPublisher namesPub;
     private final DoubleArrayPublisher statorPub;
     private final DoubleArrayPublisher supplyPub;
     private final DoubleArrayPublisher tempPub;
+    private final DoubleArrayPublisher voltsPub;
     private final DoublePublisher voltagePub;
 
     private final Notifier notifier;
@@ -101,15 +104,18 @@ public class PowerTelemetry {
         statorSignals = new BaseStatusSignal[talons.length];
         supplySignals = new BaseStatusSignal[talons.length];
         tempSignals = new BaseStatusSignal[talons.length];
+        voltSignals = new BaseStatusSignal[talons.length];
         for (int i = 0; i < talons.length; i++) {
             statorSignals[i] = talons[i].getStatorCurrent();
             supplySignals[i] = talons[i].getSupplyCurrent();
             tempSignals[i] = talons[i].getDeviceTemp();
+            voltSignals[i] = talons[i].getMotorVoltage();
         }
-        allSignals = new BaseStatusSignal[talons.length * 3];
+        allSignals = new BaseStatusSignal[talons.length * 4];
         System.arraycopy(statorSignals, 0, allSignals, 0, talons.length);
         System.arraycopy(supplySignals, 0, allSignals, talons.length, talons.length);
         System.arraycopy(tempSignals, 0, allSignals, talons.length * 2, talons.length);
+        System.arraycopy(voltSignals, 0, allSignals, talons.length * 3, talons.length);
         BaseStatusSignal.setUpdateFrequencyForAll(1.0 / UPDATE_PERIOD_SECONDS, allSignals);
 
         NetworkTable table = NetworkTableInstance.getDefault().getTable("CompanionTelemetry");
@@ -117,6 +123,7 @@ public class PowerTelemetry {
         statorPub = table.getDoubleArrayTopic("stator").publish();
         supplyPub = table.getDoubleArrayTopic("supply").publish();
         tempPub = table.getDoubleArrayTopic("temp").publish();
+        voltsPub = table.getDoubleArrayTopic("volts").publish();
         voltagePub = table.getDoubleTopic("voltage").publish();
 
         // Static labels -- published once, here.
@@ -136,17 +143,22 @@ public class PowerTelemetry {
             statorAmps[slot] = statorSignals[i].getValueAsDouble();
             supplyAmps[slot] = supplySignals[i].getValueAsDouble();
             tempCelsius[slot] = tempSignals[i].getValueAsDouble();
+            motorVolts[slot] = voltSignals[i].getValueAsDouble();
         }
         for (int i = 0; i < sparks.length; i++) {
             int slot = sparkSlots[i];
             statorAmps[slot] = sparks[i].getOutputCurrent();
             supplyAmps[slot] = Double.NaN; // SparkMax has no supply-current measurement
             tempCelsius[slot] = sparks[i].getMotorTemperature();
+            // SparkMax has no measured output-voltage signal; applied duty x bus voltage is the
+            // standard derivation. Display telemetry only -- stall detection stays on current.
+            motorVolts[slot] = sparks[i].getAppliedOutput() * sparks[i].getBusVoltage();
         }
 
         statorPub.set(statorAmps);
         supplyPub.set(supplyAmps);
         tempPub.set(tempCelsius);
+        voltsPub.set(motorVolts);
         voltagePub.set(RobotController.getBatteryVoltage());
     }
 }

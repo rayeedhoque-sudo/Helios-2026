@@ -3,13 +3,16 @@ package frc.robot.commands;
 import static edu.wpi.first.units.Units.*;
 
 import java.util.Optional;
+import java.util.OptionalDouble;
 import java.util.Set;
+import java.util.function.BooleanSupplier;
 import java.util.function.DoubleSupplier;
 import java.util.function.Supplier;
 
 import com.ctre.phoenix6.SignalLogger;
 import com.ctre.phoenix6.Utils;
 import com.ctre.phoenix6.swerve.SwerveDrivetrainConstants;
+import com.ctre.phoenix6.swerve.SwerveModule.DriveRequestType;
 import com.ctre.phoenix6.swerve.SwerveModuleConstants;
 import com.ctre.phoenix6.swerve.SwerveRequest;
 import com.pathplanner.lib.auto.AutoBuilder;
@@ -21,12 +24,15 @@ import com.pathplanner.lib.path.PathConstraints;
 
 import edu.wpi.first.math.Matrix;
 import edu.wpi.first.math.VecBuilder;
+import edu.wpi.first.math.filter.Debouncer;
 import edu.wpi.first.math.geometry.Pose2d;
 import edu.wpi.first.math.geometry.Rotation2d;
 import edu.wpi.first.math.geometry.Translation2d;
 import edu.wpi.first.math.kinematics.ChassisSpeeds;
 import edu.wpi.first.math.numbers.N1;
 import edu.wpi.first.math.numbers.N3;
+import edu.wpi.first.networktables.DoublePublisher;
+import edu.wpi.first.networktables.NetworkTableInstance;
 import edu.wpi.first.wpilibj.DriverStation;
 import edu.wpi.first.wpilibj.DriverStation.Alliance;
 import edu.wpi.first.wpilibj.Notifier;
@@ -36,6 +42,7 @@ import edu.wpi.first.wpilibj2.command.Commands;
 import edu.wpi.first.wpilibj2.command.Subsystem;
 import edu.wpi.first.wpilibj2.command.sysid.SysIdRoutine;
 import frc.robot.Robot;
+import frc.robot.Constants.FieldConstants;
 import frc.robot.Constants.SubsystemConstants.Vision;
 import frc.robot.Constants.TunerConstants.TunerSwerveDrivetrain;
 import frc.robot.subsystems.utility.LimelightHelpers;
@@ -314,18 +321,30 @@ public class CommandSwerveDrivetrain extends TunerSwerveDrivetrain implements Su
                 m_hasAppliedOperatorPerspective = true;
             });
         }
-        // Vision pose correction (MegaTag2). Disabled by default until the Limelight's mounting,
-        // pipeline, and field map are verified on the robot -- flip Vision.ENABLE_MEGATAG2_POSE.
+        // AprilTag pose correction: MT1 auto-seed + MegaTag2 X/Y fusion (team request
+        // 2026-07-17). PREREQUISITE: Limelight camera mount pose set in its web UI --
+        // see Vision.ENABLE_MEGATAG2_POSE.
         if (Vision.ENABLE_MEGATAG2_POSE) {
             updateVisionPose();
         }
     }
 
+    // "Tags currently correcting the pose" for the driver-companion field map's vision
+    // badge: 0 = odometry only. Lives in the same NT table as Pose/robotPose (Telemetry).
+    private final DoublePublisher visionTagCountPub = NetworkTableInstance.getDefault()
+        .getTable("Pose").getDoubleTopic("visionTagCount").publish();
+
     /**
-     * Fuses a Limelight MegaTag2 pose estimate into the drivetrain's pose estimator.
-     * Always uses the BLUE-origin estimate: PathPlanner (and this drivetrain's pose) keep the
-     * origin on the blue side for both alliances, so alliance-switching to the red-origin
-     * estimate would corrupt the pose. Safe to call with no Limelight connected.
+     * AprilTag pose correction, two layers (both BLUE-origin -- PathPlanner and this
+     * drivetrain keep the origin on the blue side for both alliances):
+     * 1. AUTO-SEED (MegaTag1): while DISABLED, adopt the full tag pose whenever it
+     *    disagrees with odometry (pre-match auto re-zero -- the robot is sitting still).
+     *    While ENABLED, re-seed the HEADING only, and only from a multi-tag solve while
+     *    nearly stationary (Vision.VISION_SEED_* gates) -- moving single-tag MT1 yaw is
+     *    noise the Pigeon exists to reject.
+     * 2. FUSION (MegaTag2): continuous X/Y correction; yaw std dev is huge so the Pigeon
+     *    always owns heading between seeds.
+     * Safe to call with no Limelight connected. MENU re-zero remains the manual backstop.
      */
     private void updateVisionPose() {
         // Feed the Limelight our gyro yaw (deg, blue-origin) -- required for MegaTag2.
@@ -337,15 +356,60 @@ public class CommandSwerveDrivetrain extends TunerSwerveDrivetrain implements Su
             // 1 -> EXTERNAL_SEED : Seed internal IMU
             // 4 -> INTERNAL_EXTERNAL_ASSIST : Use internal IMU + MT1
 
+        // ---- Layer 1: MT1 auto-seed ("auto re-zero") ----
+        PoseEstimate mt1 = LimelightHelpers.getBotPoseEstimate_wpiBlue(Vision.CAM_LIMELIGHT);
+        if (mt1 != null && mt1.tagCount >= 1
+                && mt1.avgTagDist <= Vision.VISION_SEED_MAX_TAG_DIST_METERS
+                && isInsideField(mt1.pose)) {
+            Pose2d current = this.getState().Pose;
+            double posErrMeters = mt1.pose.getTranslation().getDistance(current.getTranslation());
+            double yawErrDeg = Math.abs(mt1.pose.getRotation().minus(current.getRotation()).getDegrees());
+            if (DriverStation.isDisabled()) {
+                if (posErrMeters > Vision.VISION_SEED_POS_TOL_METERS
+                        || yawErrDeg > Vision.VISION_SEED_YAW_TOL_DEG) {
+                    this.resetPose(mt1.pose);
+                    visionTagCountPub.set(mt1.tagCount);
+                    return; // pose buffer just reset -- skip fusing stale MT2 this loop
+                }
+            } else if (mt1.tagCount >= Vision.VISION_SEED_ENABLED_MIN_TAGS
+                    && isNearlyStationary()
+                    && yawErrDeg > Vision.VISION_SEED_YAW_TOL_DEG) {
+                // In-match: yaw only -- X/Y stays MT2's job (timestamped, filtered).
+                this.resetRotation(mt1.pose.getRotation());
+                visionTagCountPub.set(mt1.tagCount);
+                return;
+            }
+        }
+
+        // ---- Layer 2: MegaTag2 X/Y fusion ----
         PoseEstimate mt2 = LimelightHelpers.getBotPoseEstimate_wpiBlue_MegaTag2(Vision.CAM_LIMELIGHT);
         if (mt2 == null || mt2.tagCount == 0) {
-            return; // no Limelight data / no tags in view
+            visionTagCountPub.set(0); // no Limelight data / no tags in view
+            return;
         }
         if (Math.abs(this.getPigeon2().getAngularVelocityZDevice().getValueAsDouble()) > 360) {
-            return; // spinning too fast for a trustworthy MegaTag2 solve
+            visionTagCountPub.set(0); // spinning too fast for a trustworthy MegaTag2 solve
+            return;
         }
         // Trust MegaTag2 X/Y, never its yaw (huge theta std dev) -- the Pigeon owns heading.
         this.addVisionMeasurement(mt2.pose, mt2.timestampSeconds, VecBuilder.fill(0.7, 0.7, 9999999));
+        visionTagCountPub.set(mt2.tagCount);
+    }
+
+    /** True while the chassis is slow enough (translation AND rotation) to trust an
+     *  in-match MT1 heading re-seed. Thresholds in Vision.VISION_SEED_*. */
+    private boolean isNearlyStationary() {
+        ChassisSpeeds speeds = this.getState().Speeds; // robot-relative; magnitude is frame-free
+        double speedMps = Math.hypot(speeds.vxMetersPerSecond, speeds.vyMetersPerSecond);
+        double yawRateDps = Math.abs(this.getPigeon2().getAngularVelocityZDevice().getValueAsDouble());
+        return speedMps < Vision.VISION_SEED_MAX_SPEED_MPS
+            && yawRateDps < Vision.VISION_SEED_MAX_YAW_RATE_DPS;
+    }
+
+    /** Rejects botpose solves that land outside the field -- a garbage solve can't seed. */
+    private static boolean isInsideField(Pose2d pose) {
+        return pose.getX() >= 0 && pose.getX() <= FieldConstants.FIELD_LENGTH_METERS
+            && pose.getY() >= 0 && pose.getY() <= FieldConstants.FIELD_WIDTH_METERS;
     }
 
     private void startSimThread() {
@@ -426,6 +490,11 @@ public class CommandSwerveDrivetrain extends TunerSwerveDrivetrain implements Su
         request.HeadingController.enableContinuousInput(-Math.PI, Math.PI); // take the short way around
         // Cap the commanded spin (P-only at 5 rad/s per rad could otherwise demand ~15 rad/s).
         request.MaxAbsRotationalRate = 1.5 * Math.PI; // rad/s. TODO tune on robot
+        // Targets here are computed from the BLUE-ORIGIN pose (pose heading + delta), but the
+        // request DEFAULTS to OperatorPerspective, which re-rotates TargetDirection 180 deg on
+        // red alliance -- the servo would chase the wrong heading while the .until() tolerance
+        // (blue-frame) could never latch. Fixed 2026-07-17.
+        request.ForwardPerspective = SwerveRequest.ForwardPerspectiveValue.BlueAlliance;
 
         // The command must END when on target (or on the timeout backstop) so the drivetrain
         // returns to the driver's default drive command -- chaining an Idle request here would
@@ -441,6 +510,175 @@ public class CommandSwerveDrivetrain extends TunerSwerveDrivetrain implements Su
                     .minus(Rotation2d.fromDegrees(targetAngleDegrees.getAsDouble())).getDegrees()
             ) < 2 // deg. P-only control may hold a small steady-state error; 1 deg could never latch
         ).withTimeout(2.0); // s -- backstop so a stalled align can never hang the drivetrain. TODO tune
+    }
+
+    /**
+     * SEARCH-ALIGN (A / DPAD-UP, hold): while no usable tag is in view, rotate in place
+     * slowly (translation stays zero) so the Limelight sweeps the field; the moment seesTag
+     * reports a scoring tag of OUR alliance, face it -- targetHeadingDegrees is re-sampled
+     * EVERY loop, so the aim tracks the live vision bearing. Deliberately never self-ends
+     * (no until/withTimeout): this is bound whileTrue, so the driver's hold IS the timeout
+     * and release returns the drivetrain to the default drive command.
+     */
+    public Command searchAndAlignCommand(BooleanSupplier seesTag, DoubleSupplier targetHeadingDegrees){
+        var searchRequest = new SwerveRequest.FieldCentric(); // velocities default 0 -- rotate in place
+        var faceRequest = new SwerveRequest.FieldCentricFacingAngle();
+        // Same heading-servo setup as rotateToAngle: the HeadingController gains default to 0
+        // (zero rotation output without this), continuous input takes the short way around,
+        // and the rate cap tames P-only spikes. Radians in, rad/s out.
+        faceRequest.HeadingController.setPID(5.0, 0.0, 0.0); // TODO tune on robot
+        faceRequest.HeadingController.enableContinuousInput(-Math.PI, Math.PI);
+        faceRequest.MaxAbsRotationalRate = 1.5 * Math.PI; // rad/s. TODO tune on robot
+        // Blue-origin targets (pose heading + camera bearing) -- see rotateToAngle: the
+        // OperatorPerspective default would re-rotate them 180 deg on red alliance.
+        faceRequest.ForwardPerspective = SwerveRequest.ForwardPerspectiveValue.BlueAlliance;
+
+        return this.applyRequest(() ->
+            seesTag.getAsBoolean()
+                ? faceRequest.withTargetDirection(
+                    Rotation2d.fromDegrees(targetHeadingDegrees.getAsDouble()))
+                : searchRequest.withRotationalRate(
+                    FieldConstants.SEARCH_ROTATE_RATE_ROT_PER_SEC * 2.0 * Math.PI) // rot/s -> rad/s, CCW
+        );
+    }
+
+    /**
+     * RT AUTO-AIM drive layer (team request 2026-07-17): translation stays on the driver's
+     * sticks the whole time; the HEADING auto-locks onto the shooter's firing bearing
+     * whenever one exists (re-sampled every loop, so strafing continuously re-corrects the
+     * aim), and falls back to the driver's manual rotation stick when there is no aim
+     * target. Runs until interrupted -- bind whileTrue alongside the shot command.
+     *
+     * Frames: the aim heading arrives BLUE-ORIGIN (computed from pose), so the facing
+     * request uses the BlueAlliance perspective -- which also makes it interpret
+     * VelocityX/Y as blue-frame. The sticks are OPERATOR-frame, so they are rotated by
+     * getOperatorForwardDirection() (identity on blue, 180 deg on red) before being passed.
+     * The manual branch keeps the default OperatorPerspective and takes the sticks raw.
+     *
+     * @param velXMps           shaped/scaled operator-frame forward velocity (m/s)
+     * @param velYMps           shaped/scaled operator-frame left velocity (m/s)
+     * @param manualRotRadPerSec shaped rotation rate (rad/s) used when no aim target exists
+     * @param aimHeadingDeg     blue-origin firing bearing, empty = no target (manual rotation)
+     */
+    public Command driveWithAimLockCommand(DoubleSupplier velXMps, DoubleSupplier velYMps,
+            DoubleSupplier manualRotRadPerSec, Supplier<OptionalDouble> aimHeadingDeg){
+        var aimRequest = new SwerveRequest.FieldCentricFacingAngle();
+        // Same heading servo as rotateToAngle/searchAndAlign. Radians in, rad/s out.
+        aimRequest.HeadingController.setPID(5.0, 0.0, 0.0); // TODO tune on robot
+        aimRequest.HeadingController.enableContinuousInput(-Math.PI, Math.PI);
+        aimRequest.MaxAbsRotationalRate = 1.5 * Math.PI; // rad/s. TODO tune on robot
+        aimRequest.ForwardPerspective = SwerveRequest.ForwardPerspectiveValue.BlueAlliance;
+        aimRequest.DriveRequestType = DriveRequestType.Velocity; // closed-loop, like the default drive
+        var manualRequest = new SwerveRequest.FieldCentric()
+            .withDriveRequestType(DriveRequestType.Velocity); // OperatorPerspective default: raw sticks
+
+        return run(() -> {
+            OptionalDouble target = aimHeadingDeg.get();
+            if (target.isPresent()) {
+                // Operator-frame sticks -> blue frame (identity blue / 180 red), one source
+                // of truth: the drivetrain's own applied operator perspective.
+                Translation2d blueVel = new Translation2d(
+                        velXMps.getAsDouble(), velYMps.getAsDouble())
+                    .rotateBy(getOperatorForwardDirection());
+                setControl(aimRequest
+                    .withVelocityX(blueVel.getX())
+                    .withVelocityY(blueVel.getY())
+                    .withTargetDirection(Rotation2d.fromDegrees(target.getAsDouble())));
+            } else {
+                setControl(manualRequest
+                    .withVelocityX(velXMps.getAsDouble())
+                    .withVelocityY(velYMps.getAsDouble())
+                    .withRotationalRate(manualRotRadPerSec.getAsDouble()));
+            }
+        });
+    }
+
+    /**
+     * AIM-then-stop for the precision shot (team request 2026-07-17: "auto-aim, THEN disable
+     * drive"). Rotate IN PLACE (translation 0) toward the live blue-origin {@code targetHeadingDeg}
+     * and END the instant {@code aimed} reports the robot is lined up on a REAL target. Differs
+     * from {@link #rotateToAngle}: it ends on the SHOOTER's own aim gate (not a fixed 2 deg) and
+     * has NO timeout -- with no target {@code aimed} never latches, so it just holds heading rather
+     * than ending early and letting a never-aimed shot fire. The caller sequences a freeze (Idle)
+     * + feed AFTER this, so the drivetrain is disabled and fuel is fed only once the aim is made.
+     */
+    public Command aimUntilAligned(DoubleSupplier targetHeadingDeg, BooleanSupplier aimed) {
+        var request = new SwerveRequest.FieldCentricFacingAngle();
+        // Same heading servo as rotateToAngle / driveWithAimLock. Radians in, rad/s out.
+        request.HeadingController.setPID(5.0, 0.0, 0.0); // TODO tune on robot
+        request.HeadingController.enableContinuousInput(-Math.PI, Math.PI);
+        request.MaxAbsRotationalRate = 1.5 * Math.PI; // rad/s
+        // Blue-origin bearing (from pose) -- OperatorPerspective default would re-rotate it 180 on red.
+        request.ForwardPerspective = SwerveRequest.ForwardPerspectiveValue.BlueAlliance;
+        return this.applyRequest(() ->
+                request.withTargetDirection(Rotation2d.fromDegrees(targetHeadingDeg.getAsDouble())))
+            .until(aimed);
+    }
+
+    /**
+     * DPAD-LEFT/RIGHT: rotate exactly deltaDegrees (CCW positive, per WPILib convention)
+     * from wherever the robot points when the command is SCHEDULED -- deferred, because a
+     * heading read at binding-construction time would snapshot the boot heading forever.
+     * Delegates to rotateToAngle, keeping its 2 deg tolerance and 2 s timeout so the
+     * command self-ends and hands the drivetrain back to the driver.
+     */
+    public Command rotateBy(double deltaDegrees){
+        return Commands.defer(
+            () -> rotateToAngle(this.getState().Pose.getRotation().getDegrees() + deltaDegrees),
+            Set.of(this));
+    }
+
+    // ---- Simple drive-forward autonomous with stall abort ----
+    // Stall = a wheel or the whole robot jammed against something. We watch every drive AND steer
+    // motor's MEASURED stator current (getStatorCurrent, not commanded output) and abort the whole
+    // drive the moment any of them pins high longer than the debounce -- so the robot never keeps
+    // grinding into a jam or a wall. Thresholds sit below each motor's configured stator limit
+    // (drive slip = 120 A, steer = 40 A, see TunerConstants) but well above normal cruise draw.
+    // TODO tune all three on the robot.
+    private static final double kAutoDriveStallAmps = 90.0;   // A, per drive Kraken X60
+    private static final double kAutoSteerStallAmps = 35.0;   // A, per steer Kraken X44
+    private static final double kAutoStallDebounceSec = 0.3;  // s any motor must stay stalled to abort
+
+    /** True if ANY module's drive or steer motor is drawing stall-level stator current right now. */
+    private boolean anyDriveMotorStalled() {
+        for (var module : getModules()) {
+            double driveAmps = Math.abs(module.getDriveMotor().getStatorCurrent().getValueAsDouble());
+            double steerAmps = Math.abs(module.getSteerMotor().getStatorCurrent().getValueAsDouble());
+            if (driveAmps >= kAutoDriveStallAmps || steerAmps >= kAutoSteerStallAmps) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Basic autonomous: drive ROBOT-relative straight forward at a fixed speed until the robot has
+     * traveled {@code meters} (measured by odometry) OR any drive/steer motor stalls. On either end
+     * the wheels lock in an X (SwerveDriveBrake) and the command finishes, handing the drivetrain
+     * back to the default command (which holds zero velocity). Deferred so the start pose and the
+     * stall debouncer are fresh every time it's scheduled.
+     *
+     * @param meters          distance to travel forward (m)
+     * @param metersPerSecond forward speed (m/s), closed-loop velocity
+     */
+    public Command driveForwardAuto(double meters, double metersPerSecond) {
+        return Commands.defer(() -> {
+            Translation2d start = this.getState().Pose.getTranslation();
+            Debouncer stallDebounce = new Debouncer(kAutoStallDebounceSec, Debouncer.DebounceType.kRising);
+            var driveForward = new SwerveRequest.RobotCentric()
+                .withDriveRequestType(DriveRequestType.Velocity); // closed-loop velocity
+            var lock = new SwerveRequest.SwerveDriveBrake();
+            return this.applyRequest(() -> driveForward
+                        .withVelocityX(metersPerSecond)
+                        .withVelocityY(0)
+                        .withRotationalRate(0))
+                    .until(() ->
+                        start.getDistance(this.getState().Pose.getTranslation()) >= meters
+                        || stallDebounce.calculate(anyDriveMotorStalled()))
+                    // One-shot X-lock so the command ENDS (default command then holds 0) -- a
+                    // run-forever brake leg would keep the drivetrain and lock the driver out.
+                    .andThen(this.runOnce(() -> this.setControl(lock)));
+        }, Set.of(this));
     }
 
     public Command driveToPose(Pose2d targetPose){
