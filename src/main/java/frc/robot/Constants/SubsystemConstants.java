@@ -42,6 +42,66 @@ public class SubsystemConstants {
             public static final double PP_MAX_ANGULAR_VELOCITY = Math.PI;           // rad/s (180 deg/s)
             public static final double PP_MAX_ANGULAR_ACCELERATION = 2 * Math.PI;   // rad/s^2
 
+            // ---- Limelight thermal / power management (LimelightThermalManager) ----
+            // HARDWARE REALITY, measured on THIS camera 2026-07-18 via its /status endpoint:
+            // the Limelight 4's heat is dominated by its on-board Hailo AI accelerator -- a
+            // FIXED ~3.75 W / ~74 C load that is powered whenever the camera runs and does NOT
+            // respond to pipeline resolution, framerate, LED state, or CPU load (verified by
+            // sweeping all of them: hailoTemp/hailoPower never moved off 74 C / 3.75 W, and it
+            // is already 74 C ~2 s after a cold boot). The AprilTag pipeline does not even use
+            // the Hailo (its neural runtimes are CPU), yet it stays hot.
+            //   => Robot code CANNOT throttle the actual hot chip. This manager does what it
+            //      CAN: (1) force LEDs OFF (the only camera power the RIO controls; passive
+            //      AprilTags never need them); (2) drop to a lower-res "idle" AprilTag pipeline
+            //      when not shooting -- shaves only the CPU/board heat and keeps low-res
+            //      MegaTag2 pose fusion alive; (3) read the temps and WARN the driver.
+            //   => The real fix for genuine overheating is PHYSICAL: confirm the camera's fan
+            //      spins and improve enclosure airflow/heatsinking. Software only warns.
+            //
+            // Pipeline indices. NORMAL = full-res AprilTag (best shot ranging). IDLE = lower-
+            // res AprilTag (still feeds pose fusion, a bit less CPU/board heat). IDLE MUST be an
+            // AprilTag pipeline that EXISTS on the camera -- a non-fiducial or missing idle
+            // pipeline blinds MegaTag2 when the shooter is idle. Set LL_PIPELINE_IDLE = 0 (same
+            // as NORMAL) to DISABLE idle switching until pipeline 1 is created on the Limelight
+            // (clone 0, LEDs off, lower resolution). TODO create/confirm pipeline 1 on robot.
+            public static final int LL_PIPELINE_NORMAL = 0;
+            // Set to 0 (== NORMAL) 2026-07-18 to DISABLE idle-pipeline switching. If pipeline 1
+            // isn't a working AprilTag pipeline on this camera, the thermal manager was switching to
+            // it whenever the shooter idled and BLINDING vision -- which is exactly the RT auto-aim
+            // bootstrap state (flywheels stay off until a target is found), so auto-aim could never
+            // acquire a tag (e.g. tag 18). Idle switching only sheds board/CPU heat (never the
+            // dominant Hailo load), so disabling it costs ~nothing. Create pipeline 1 (clone 0,
+            // lower res, LEDs off), confirm it exists, then set this back to 1 to restore idle
+            // power-saving. TODO create/confirm pipeline 1 on robot.
+            public static final int LL_PIPELINE_IDLE = 0;
+
+            // The camera reports hailoTemp/temp only over HTTP (verified: the NT 'hw' array does
+            // not carry the Hailo temp). Polled OFF the main loop by a Notifier; robotPeriodic
+            // only reads cached values, so a slow/at camera never stalls the 20 ms loop.
+            public static final int    LL_STATUS_PORT = 5807;
+            public static final double LL_STATUS_POLL_SEC = 1.0;    // thermal changes are slow; 1 Hz is plenty
+            public static final double LL_STATUS_TIMEOUT_SEC = 0.3; // per-request connect+read cap
+
+            // Thermal thresholds on hailoTemp (deg C), hysteresis: engage idle at HOT, release
+            // at COOL. WARN just alerts the driver. PLACEHOLDERS -- the LL4 Hailo-8 shutdown
+            // point is not published and it idles ~74 C in open air (climbs in an enclosure);
+            // tune these against the real temperature the camera reaches on the robot. TODO tune.
+            public static final double LL_TEMP_WARN_C = 80.0;   // TODO tune: driver warning
+            public static final double LL_TEMP_HOT_C  = 83.0;   // TODO tune: engage thermal idle
+            public static final double LL_TEMP_COOL_C = 78.0;   // TODO tune: release thermal idle
+
+            // Plausibility gate: only act on a reading inside a sane range, so a bad/missing
+            // read can never force the idle pipeline (and degrade vision) on garbage data.
+            public static final double LL_TEMP_SANE_MIN_C = 10.0;
+            public static final double LL_TEMP_SANE_MAX_C = 120.0;
+
+            // Hold the full pipeline this long after the shooter last went inactive, so rapid
+            // spin-up/down does not churn the pipeline (each switch costs a few frames of no
+            // targets) and the camera is already full-res the instant the next shot starts.
+            public static final double LL_IDLE_HOLD_FULL_SEC = 3.0;  // TODO tune
+
+            // Rate-limit the over-temp warning so a sustained event does not spam the DS console.
+            public static final double LL_WARN_INTERVAL_SEC = 5.0;
         }
 
         public static class ClimbSubsystemConstants{
@@ -122,13 +182,14 @@ public class SubsystemConstants {
                 public static final double UNJAM_SPEED = 0.3;
                 // Slow duty for the (unbound) kicker-only test (bypasses the at-speed gate).
                 public static final double KICKER_TEST_SPEED = 0.3;
-                // Kicker duty while INTAKING (LT): the flywheels are STOPPED during intake,
-                // so fuel pressed against them can stall the kicker CIM -- and the Victor
-                // SPX has no current sensing, so this deliberately LOW duty is the only
-                // thing keeping a momentary stall breaker-survivable (CIM stall at 12 V is
-                // ~131 A; at 0.3 duty a stall draws roughly a third of that -- brief events
-                // ride the breaker curve). [assumed] TODO tune on robot; keep it low.
-                public static double INTAKE_KICKER_SPEED = 0.3;
+                // Slow duty for the single-belt direction tests (VIEW / DPAD-DOWN): slow enough
+                // that even a full stall sits well under the 20 A smart limit.
+                public static final double DIRECTION_TEST_SPEED = 0.05;
+                // (INTAKE_KICKER_SPEED removed 2026-07-18: team spec "during intake only the
+                // hopper runs, not the kicker" -- intakeFeedCommand no longer touches the kicker.
+                // The stall analysis it carried still applies to ANY kicker use against stopped
+                // flywheels: CIM stall at 12 V is ~131 A and the Victor SPX has no current
+                // sensing, so duty is the only software knob -- see manualRunCommand.)
         }
 
         public static class ShooterSubsystemConstants{
@@ -155,18 +216,42 @@ public class SubsystemConstants {
                 public static final double FLYWHEEL_ROTATIONS_PER_MOTOR_ROTATION = 1.5;
                     // Flywheel rotations per motor rotation.
                     // Gear ratio is 3:2 (3 flywheel rotations for every 2 Kraken rotations).
-                public static final double NEO550_ROTATIONS_PER_HOOD_ROTATION = 187.5;
-                    // Motor rotations required for 1 degree of hood movement.
-                    // Gear ratio is 187.5 : 1( 0.00533333333 NEO550 rotations = 1 hood rotation).
-                public static final double NEO550_ROTATIONS_PER_HOOD_DEGREE = NEO550_ROTATIONS_PER_HOOD_ROTATION * 0.0317428;
-                    // Motor rotations required for 1 degree of hood movement.
-                public static final double SHOOTER_ANGLE_OFFSET = 63;
+                // Hood ABSOLUTE-encoder calibration: raw getPosition() units <-> PHYSICAL hood
+                // degrees, measured on-robot 2026-07-18 by hand-moving the hood to each HARD STOP
+                // and reading "Hood Encoder Raw (rot)" on the Shooter tab:
+                //   FULL-UP   hard stop = 113.458 raw = 44.5  deg physical
+                //   FULL-DOWN hard stop = 191.040 raw = 3.224 deg physical
+                // Raw DECREASES as the hood raises. getShooterAngleDegrees() linearly interpolates
+                // between these two anchors. These describe the PHYSICAL STOPS and are INDEPENDENT of
+                // the soft travel limits (MIN_ANGLE/MAX_ANGLE) -- so insetting those limits for
+                // clearance never shifts this measurement scale. Replaced the old motor-rotation math
+                // (offset 63, divisor 187.5*0.0317428): the absolute encoder reads ~113-191, NOT
+                // [0,1) motor rotations, so that formula returned a near-constant ~-10.5 deg and
+                // railed the hood. TODO re-verify the four anchors on robot.
+                public static double HOOD_RAW_AT_FULL_UP   = 113.458;
+                public static double HOOD_DEG_AT_FULL_UP   = 44.5;
+                public static double HOOD_RAW_AT_FULL_DOWN = 191.040;
+                public static double HOOD_DEG_AT_FULL_DOWN = 3.224;
+                // Sanity band for the RAW hood encoder reading: the anchors above +- ~9 deg of
+                // slack. Outside this band the feedback is treated as FAULTED (unplugged encoder
+                // reads 0; boot-transient frames; wiring damage) and periodic() holds the hood at
+                // 0 V instead of closing the loop on garbage. Update alongside the anchors if the
+                // hood is ever re-anchored.
+                public static double HOOD_RAW_SANE_MIN = 96.0;
+                public static double HOOD_RAW_SANE_MAX = 208.0;
             //SHOT MODEL (distance -> velocity; shot-math spec 2026-07-16, numerically integrated
             // quadratic-drag ballistics for the OFFICIAL FUEL ball -- 5.91 in / 0.203-0.227 kg
             // foam, Cd~0.5, manual sec.5.10.1 -- validated against the no-drag closed form.
-            // Angle rule: FIXED at MAX_ANGLE (44.5 deg). Spec 2.4 swept 25-44.5 deg over the whole
-            // legal envelope: 44.5 needs the LOWEST speed AND the steepest entry everywhere, so
-            // scoring never varies the hood; its lower range exists only for stowing.)
+            // Angle rule: FIXED at MAX_ANGLE (was 44.5 deg; now 38 after the belt-skip inset --
+            // see SHOOTER CONSTRAINTS). Spec 2.4 swept 25-44.5 deg over the whole legal envelope:
+            // 44.5 needed the LOWEST speed AND the steepest entry everywhere, so scoring never
+            // varies the hood; its lower range exists only for stowing.
+            // TODO STALE AT 38 DEG: the SCORE drag/ToF fits below and MIN_SCORE_DISTANCE_METERS
+            // were derived at 44.5 deg. At 38 deg the descending-entry envelope check barely
+            // passes at 3.0 m (~2.5% margin vs ~29% before), and the spec-2.4 optimality claim
+            // is unverified. Re-run the fit generator at 38 deg (or restore the varying-angle
+            // tables) before trusting SCORE ballistics; SHOT_SPEED_SCALE is only a speed knob
+            // and cannot fix an angle-mismatched drag fit.)
                 // Ball release height above carpet. User-measured 2026-07-10: bottom of swerve
                 // to the UNEXTENDED hood = 27 in. TODO re-measure to the actual ball exit point.
                 public static final double SHOT_RELEASE_HEIGHT_METERS = Units.inchesToMeters(27);
@@ -204,11 +289,19 @@ public class SubsystemConstants {
                 // overshoots the feed zone, drop it; if still weak, nudge up AND check flywheel stator
                 // amps in PowerTelemetry (pegged at 80 = still torque-limited, not speed-limited).
                 // [assumed] TODO tune vs actual feed positions on robot.
-                public static double RB_FEED_SURFACE_SPEED = 22.0;   // m/s surface
-                // RB blind feed hood angle (deg). Set to 38 by team request 2026-07-17 (was
-                // MAX_ANGLE 44.5). The 16 m/s speed above was sized for the 44.5-deg lob --
-                // TODO retune RB_FEED_SURFACE_SPEED for the new landing distance on robot.
-                public static double RB_FEED_ANGLE = 38.0;           // deg
+                // Cut 22 -> 19.8 m/s (-10%) 2026-07-17: shot ran too fast / arced too high.
+                public static double RB_FEED_SURFACE_SPEED = 19.8;   // m/s surface
+                // RB blind feed hood angle (deg) -- a FIXED angle (team request). Set to 25 deg
+                // 2026-07-18: the hood sat FULLY DOWN (~5 deg stow) during the feed shot; team asked
+                // for it to "extend up 20 degrees", i.e. ~20 deg above the stow -> 25 deg. This is a
+                // clean, low target well clear of the MAX_ANGLE (38) hard-travel guard. Raising to
+                // it is never gated; lowering to it from a staged SCORE angle works too, because the
+                // stow interlock only gates the coast-down auto-recess (desired velocity 0), never a
+                // live shot's own commanded angle (see ShooterSubsystem periodic).
+                // NOTE: reaching it also needed more UP torque -- see HOOD_MAX_UP_VOLTAGE (6 V could
+                // not lift the hood against gravity). MUST stay < MAX_ANGLE. TODO retune
+                // RB_FEED_SURFACE_SPEED for this flatter 25 deg lob on robot.
+                public static double RB_FEED_ANGLE = 25.0;           // deg (must be < MAX_ANGLE)
                 // Time-of-flight linear fits (s) for moving-shot compensation, good to ~+-0.03 s
                 // against the integrator (spec 5): score 0.185 + 0.138*d, feed 0.618 + 0.093*d.
                 public static double SCORE_TOF_BASE_SEC = 0.185;
@@ -228,8 +321,49 @@ public class SubsystemConstants {
                 // VelocityVoltage ceiling: ~12 V / 0.12625 kV = 95 motor rps sustainable.
                 public static final double SHOT_MAX_MOTOR_RPS = 95.0;
             //SHOOTER CONSTRAINTS
-                public static double MAX_ANGLE = 44.5;
-                public static double MIN_ANGLE = 3.224;
+                // SOFT hood travel limits (deg) -- the commandable range, deliberately INSET from
+                // the physical hard stops (44.5 / 3.224, see HOOD_*_AT_FULL_* calibration) so the
+                // hood settles well OFF each stop instead of jamming it / skipping the drive belt
+                // (team request 2026-07-18). MAX dropped 44.5 -> 43 -> 38 (a further -5 deg of top
+                // leeway after the hood was seen over-extending and skipping the belt); that leaves
+                // ~6.5 deg clearance below the top stop. A HARD guard in periodic() also cuts upward
+                // drive at MAX_ANGLE so it is never exceeded. Lower MAX / raise MIN for more room;
+                // never exceed the stops. NOTE: the shot model asks for MAX_ANGLE at close range,
+                // so close shots land flatter until MAX is raised -- raise it toward the stop only
+                // once overshoot is controlled and ballistics are tuned. TODO tune the margin on robot.
+                public static double MAX_ANGLE = 38.0;   // was 44.5 (hard stop), then 43; -5 for belt-skip leeway
+                public static double MIN_ANGLE = 5.0;    // was 3.224 (hard stop)
+                // Hood drive voltage caps -- ASYMMETRIC (2026-07-18). Gravity always pulls the hood
+                // toward the DOWN stop, so raising fights gravity and lowering is gravity-assisted.
+                // The old symmetric cap was gentle enough for the DOWN stroke but too weak to
+                // LIFT the hood at all (it sat fully down during the feed shot). So the angle PID
+                // output is now clamped to [-DOWN, +UP]:
+                //   UP  (positive volts raise): 10 V -- enough to overcome gravity + friction and
+                //       servo up. Still 2 V below the original 12 V that over-extended, and the hard
+                //       MAX_ANGLE guard in periodic() (plus the ~6.5 deg inset below the 44.5 stop
+                //       and Brake idle) still catch any coast, so belt-skip risk stays bounded.
+                //   DOWN (negative volts lower): 6 V -- kept gentle; gravity assists, so this is
+                //       plenty for a controlled auto-descend and keeps it gentle on the
+                //       stroke where over-travel into the bottom would be roughest.
+                // TODO tune on robot: raise UP toward 12 if the lift is still sluggish; LOWER it if
+                // high-angle shots over-extend past MAX_ANGLE and skip the belt.
+                public static double HOOD_MAX_UP_VOLTAGE = 10.0;   // raising (fights gravity)
+                public static double HOOD_MAX_DOWN_VOLTAGE = 6.0;  // lowering (gravity-assisted, gentle)
+                // Hood gravity LIFT feedforward (volts), added to the angle-PID output ONLY while the
+                // hood is still below its target (raising). The hood loop is pure-P (kP 0.275), so at a
+                // modest error it under-drives: e.g. a 20 deg error asks only 0.275*20 = 5.5 V, below
+                // the ~7 V breakaway needed to lift the hood against gravity -- which is exactly why it
+                // "sat fully down" at the 25 deg feed target. This constant bias breaks it away and
+                // cancels the steady-state gravity droop. It is GATED off once the hood is within
+                // ANGLE_TOLERANCE of the target (see ShooterSubsystem periodic), so it can NEVER push
+                // the hood past its target into the MAX_ANGLE belt-skip zone -- the hard MAX guard
+                // still backstops the top either way. Only applies when raising; during the gravity-
+                // assisted descent it is off, so auto-descend stays gentle.
+                // STARTING VALUE -- breakaway measured ~7 V, moving-sustain is less; 5 V + the PID term
+                // clears breakaway from the stow (5.5+5 = 10.5 -> capped 10) and sustains the creep in
+                // near the target. TODO tune on robot: raise toward 7 if the hood won't start from
+                // small errors; LOWER it if shots reach MAX_ANGLE too hard.
+                public static double HOOD_RAISE_FF_VOLTS = 5.0;
                 // Surface-speed gate for the kicker, m/s. TIGHTENED 0.3 -> 0.2 (spec 6): at the
                 // 3.0 m minimum, 0.3 m/s maps to 0.30 m of along-track error -- more than the
                 // 0.226 m half-window through the opening; 0.2 closes the budget exactly.
@@ -241,6 +375,11 @@ public class SubsystemConstants {
                 // Low value = "nearly stopped". [assumed] TODO tune on robot: raise if the hood
                 // should start dropping sooner, lower it toward 0 to wait for a fuller stop.
                 public static double HOOD_LOWER_MAX_SURFACE_SPEED = 2.0;   // m/s surface
+                // Interlock SCOPE (2026-07-18): the gate above only blocks drops BELOW this angle
+                // (the stow region) and only during the coast-down auto-recess (desired velocity
+                // commanded 0). A live shot's own low angle (RB's 25 deg) and lowering within the
+                // shot band are never gated, so a staged shot can always settle to its firing angle.
+                public static double HOOD_STOW_INTERLOCK_FLOOR_DEG = 30.0;
                 // Hood gate, deg: worst contribution 0.078 m at 3 m, shrinking with distance.
                 public static double ANGLE_TOLERANCE = 0.5;
         }

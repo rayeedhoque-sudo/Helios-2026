@@ -72,22 +72,24 @@ public class TunerConstants {
         // on disable, instead of coasting on its own momentum (TalonFX default is Coast).
         .withMotorOutput(new MotorOutputConfigs().withNeutralMode(NeutralModeValue.Brake))
         // Supply-current cap = brownout protection for the 4 drive Krakens (draw multiplies x4).
-        // Backed down 60 -> 45 A per this comment's own guidance (2026-07-12): NT captures
-        // measured drive accel/turn spikes summing to 177 A supply, dipping the battery to
-        // 7.0-7.4 V (companion-app BROWNOUT RISK events). 45 A x4 caps the drivetrain burst
-        // at ~135 A. NOTE: the battery that session RESTED at 11.5 V (discharged/tired) and
-        // sagged ~4 V at 84-130 A -- current limits alone cannot save a weak battery; charge/
-        // load-test/swap it and check main-power connections before blaming these numbers.
+        // History: 60 -> 45 A after the 2026-07-12 NT capture (177 A summed accel/turn spikes,
+        // 7.0-7.4 V dips); 45 -> 40 A on 2026-07-18. The 45 A choice was sized against a math
+        // error -- the old comment claimed "45 A x4 = ~135 A" but 45 x 4 is 180 A. Real budget
+        // now: 40 x4 = 160 A burst, folding to 30 x4 = 120 A sustained. With steer's 30 x4 =
+        // 120 A ceiling the whole drivetrain worst case is ~280 A, just under the ~290 A that
+        // sags a HEALTHY pack (12.6 V rest, ~20 mOhm path) to the RIO2 6.75 V brownout floor.
         // The stator/traction limit comes from kSlipCurrent, which the swerve factory copies
-        // into StatorCurrentLimit. If accel feels soft WITH a fresh battery, raise toward 60;
-        // hardware sheet cap is 70 -- do not exceed.
+        // into StatorCurrentLimit. If accel feels soft WITH a fresh battery, raise toward 45;
+        // hardware sheet cap is 70 supply -- do not exceed.
         .withCurrentLimits(new CurrentLimitsConfigs()
-            .withSupplyCurrentLimit(Amps.of(45))
-            // Burst-then-fall-back: 45 A is allowed for accelerations, but sustained draw
-            // (pushing matches, stalls) drops to 30 A after 0.5 s -- our battery-efficiency
-            // mechanism (tightened from 60/40/1.0 after the measured 2026-07-12 dips).
+            .withSupplyCurrentLimit(Amps.of(40))
+            // Burst-then-fall-back: 40 A is allowed for accelerations, but sustained draw
+            // (pushing matches, stalls) drops to 30 A after 0.25 s. Window shortened 0.5 ->
+            // 0.25 s (2026-07-18): teleop is a stream of fresh transients that each re-arm
+            // the window, so a 0.5 s window meant the drives lived at full burst and the
+            // fold-back never engaged during a full-stick reversal (which also lasted 0.5 s).
             .withSupplyCurrentLowerLimit(Amps.of(30))
-            .withSupplyCurrentLowerTime(Seconds.of(0.5))
+            .withSupplyCurrentLowerTime(Seconds.of(0.25))
             .withSupplyCurrentLimitEnable(true));
     private static final TalonFXConfiguration steerInitialConfigs = new TalonFXConfiguration()
         .withCurrentLimits(
@@ -95,11 +97,16 @@ public class TunerConstants {
                 // Steady-state azimuth torque is small, but fast whole-module swings need a burst.
                 // The conservative-start 40/20 caps starved the steer motors during quick rotation /
                 // direction reversals (modules visibly locked mid-swing, on-robot test 2026-07-08).
-                // 60/40 = Hardware-Data-Sheet sec.7 tuned-up ceiling for the steer X44s, and matches
-                // the Tuner X project's own 60 A stator value.
+                // Stator stays at 60 (the low-speed torque that cured the lockup is stator-driven,
+                // and matches the Tuner X project's 60 A value). Supply backed off 40 -> 30 A
+                // (2026-07-18, brownout budget): 40 was the hardware-sheet sec.7 CAP, and 40 x4 =
+                // 160 A of steer draw lands at the exact moment the drives are in their burst
+                // window (the same stick whip triggers both). 30 x4 = 120 A ceiling.
+                // ON-ROBOT WATCH ITEM: if modules visibly lock/hesitate mid-swing again, this
+                // supply cut is the suspect -- step 30 -> 35 -> 40 until it clears.
                 .withStatorCurrentLimit(Amps.of(60))
                 .withStatorCurrentLimitEnable(true)
-                .withSupplyCurrentLimit(Amps.of(40))
+                .withSupplyCurrentLimit(Amps.of(30))
                 .withSupplyCurrentLimitEnable(true)
         )
         // Brake so the wheels hold their commanded steer angle instead of coasting.

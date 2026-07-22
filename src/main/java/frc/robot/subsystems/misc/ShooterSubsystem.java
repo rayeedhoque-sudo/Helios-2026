@@ -54,7 +54,13 @@ public class ShooterSubsystem extends SubsystemBase{
           private final TalonFX shooterD = new TalonFX(ShooterSubsystemConstants.SHOOTER_ID_D);
         private final SparkMax shooterAngle = new SparkMax(ShooterSubsystemConstants.SHOOTER_ANGLE_ID, com.revrobotics.spark.SparkLowLevel.MotorType.kBrushless);
             private final SparkAbsoluteEncoder shooterAngleEncoder = shooterAngle.getAbsoluteEncoder();
-    
+
+    // HOOD CLOSED-LOOP ENABLE (kill switch). false = hold the hood at 0 V (brake idle holds
+    // position) -- the safe state if the angle feedback ever misbehaves again. Re-enabled 2026-07-18
+    // after getShooterAngleDegrees() was recalibrated to the absolute encoder's real two-point map
+    // (HOOD_*_AT_FULL_UP / HOOD_*_AT_FULL_DOWN); the old motor-rotation math railed the hood.
+    private static final boolean HOOD_CLOSED_LOOP_ENABLED = true;
+
      //Shooter Speed - PID & FF
         private final VelocityVoltage m_velocity = new VelocityVoltage(0);
         // Coast request for "flywheels off": closing the velocity loop on 0 rps would actively
@@ -98,6 +104,10 @@ public class ShooterSubsystem extends SubsystemBase{
             private final GenericEntry desiredVelReachedEntry;
             private final GenericEntry desiredAngleReachedEntry;
             private final GenericEntry debugEntry;
+            // Raw absolute-encoder position (rotations, pre-conversion) -- the anchor readout for
+            // rebuilding getShooterAngleDegrees(). Hand-move the hood to each hard stop (robot
+            // DISABLED) and record this at min + max; if it never changes, the encoder isn't tracking.
+            private final GenericEntry rawHoodEncoderEntry;
 
     //Tracker Variables
        private boolean enableSubsystem;
@@ -215,6 +225,7 @@ public class ShooterSubsystem extends SubsystemBase{
                 desiredVelReachedEntry = ShooterSubsystemTab.add("Desired Velocity Reached", false).getEntry();
                 desiredAngleReachedEntry = ShooterSubsystemTab.add("Desired Angle Reached", false).getEntry();
                 debugEntry = ShooterSubsystemTab.add("Debug Field", true).getEntry();
+                rawHoodEncoderEntry = ShooterSubsystemTab.add("Hood Encoder Raw (rot)", 0.0).getEntry();
        }
 
     //Utility Methods
@@ -224,7 +235,17 @@ public class ShooterSubsystem extends SubsystemBase{
         }
 
         private double getShooterAngleDegrees(){
-            return (shooterAngleEncoder.getPosition() - ShooterSubsystemConstants.SHOOTER_ANGLE_OFFSET) / ShooterSubsystemConstants.NEO550_ROTATIONS_PER_HOOD_DEGREE;
+            // Two-point linear map of the hood absolute encoder -> PHYSICAL hood degrees, from the
+            // on-robot HARD-STOP anchors (SubsystemConstants): raw 113.458 (full up) = 44.5 deg,
+            // raw 191.040 (full down) = 3.224 deg. Raw decreases as the hood raises, so the slope is
+            // negative -- carried automatically. Anchored to the PHYSICAL stops, NOT the soft
+            // MIN/MAX_ANGLE limits, so insetting those limits never shifts this scale. Replaces the
+            // old (raw-63)/5.95 motor-rotation math, which froze near -10.5 deg and railed the hood.
+            double raw = shooterAngleEncoder.getPosition();
+            return ShooterSubsystemConstants.HOOD_DEG_AT_FULL_UP
+                + (raw - ShooterSubsystemConstants.HOOD_RAW_AT_FULL_UP)
+                  * (ShooterSubsystemConstants.HOOD_DEG_AT_FULL_DOWN - ShooterSubsystemConstants.HOOD_DEG_AT_FULL_UP)
+                  / (ShooterSubsystemConstants.HOOD_RAW_AT_FULL_DOWN - ShooterSubsystemConstants.HOOD_RAW_AT_FULL_UP);
         }
 
         // Own alliance for the tag partition. DriverStation may not know yet (no FMS / DS
@@ -318,9 +339,24 @@ public class ShooterSubsystem extends SubsystemBase{
             return velReached && angleReached && isAimedAtTarget();
         }
 
+        // Kicker gate, SPEED ONLY (team request 2026-07-18: "kicker only starts after the
+        // flywheels are up to speed"). True once the measured flywheel surface speed is within
+        // SPEED_TOLERANCE of a NONZERO commanded speed -- a refused/absent shot commands 0 and
+        // can never read at-speed, so this also keeps the kicker off stopped wheels. Deliberately
+        // ignores hood angle + aim (unlike isReadyToShoot) so it still opens while the hood
+        // encoder is down; tighten to isReadyToShoot once the hood feedback is trusted.
+        // NOTE: ball contact briefly slows the wheels below tolerance, pausing the kicker until
+        // they recover -- that paces fuel so every ball leaves at speed. If the kicker never
+        // opens at all, SPEED_TOLERANCE (0.2 m/s) is likely too tight for the untuned velocity
+        // loop -- widen it before blaming the gate.
+        public boolean isFlywheelAtSpeed(){
+            return velReached;
+        }
+
         // Shot model core (SHOT MODEL block in ShooterSubsystemConstants has the derivation).
         // No-drag closed form for exit speed through (distance, deltaH) at the FIXED max hood
-        // angle (spec 2.4: 44.5 deg needs the lowest speed AND steepest entry everywhere in the
+        // angle (spec 2.4 at the then-44.5 deg MAX; now 38 after the belt-skip inset -- fits
+        // are stale, see the SHOT MODEL TODO in constants; steepest-entry claim held for the
         // envelope), times the distance-fitted drag multiplier, converted to flywheel SURFACE
         // speed (m/s). Returns 0 (= refuse: CoastOut path, at-speed gate never opens, kicker
         // never feeds) when the ball cannot cross the target height DESCENDING or the motor
@@ -584,8 +620,9 @@ public class ShooterSubsystem extends SubsystemBase{
         }
 
         // RB (hold) = fixed blind feed: fixed hood angle + fixed tunable feed surface speed.
-        // The kicker stays gated through isReadyToShoot() in the hopper bindings (at-speed +
-        // at-angle). Release: flywheels coast, hood recesses to MIN.
+        // The RB binding runs belts always and gates the kicker on isFlywheelAtSpeed() (team
+        // request 2026-07-18) -- fuel feeds only once the wheels actually reach the commanded
+        // speed, never into wheels still spinning up. Release: flywheels coast, hood -> MIN.
         public Command feedAngleShotCommand(){
             return runEnd(
                 () -> {
@@ -639,20 +676,66 @@ public class ShooterSubsystem extends SubsystemBase{
                 }
 
             //Shooter Angle
-                // Hood-lower interlock (team request 2026-07-17): never drive the hood DOWN while
-                // the flywheels are still spinning above HOOD_LOWER_MAX_SURFACE_SPEED -- hold the
-                // current angle and let them coast down first. Raising the hood (staging a shot) is
-                // always allowed. desired_Angle stays latched, so the hood drops on its own the
-                // moment the wheels are slow enough -- "hood only auto-lowers when flywheels are
-                // low / stopped".
+                // Hood-lower interlock (team request 2026-07-17): never drive the hood down INTO
+                // THE STOW REGION (below HOOD_STOW_INTERLOCK_FLOOR_DEG) while the flywheels spin
+                // above HOOD_LOWER_MAX_SURFACE_SPEED -- hold and let them coast down first, so
+                // "the hood only auto-recesses when the flywheels are low / stopped". Lowering
+                // WITHIN the shot band stays live while spinning, so a staged shot can still
+                // settle to its firing angle. Raising is never gated. desired_Angle stays
+                // latched, so the stow drop happens on its own the moment the wheels are slow enough.
+                double rawHood = shooterAngleEncoder.getPosition();
                 double currentHoodAngle = getShooterAngleDegrees();
                 double hoodTarget = MathUtil.clamp(desired_Angle, ShooterSubsystemConstants.MIN_ANGLE, ShooterSubsystemConstants.MAX_ANGLE);
                 if (hoodTarget < currentHoodAngle
+                        && hoodTarget < ShooterSubsystemConstants.HOOD_STOW_INTERLOCK_FLOOR_DEG
+                        // Gate ONLY the coast-down auto-recess (velocity commanded 0). A LIVE shot
+                        // that commands its own low angle (RB's 25 deg) must be allowed to lower
+                        // while its flywheels spin -- otherwise pressing RB with the hood staged
+                        // high (e.g. right after RT) would freeze the hood at the OLD angle for
+                        // the whole hold while the ungated kicker fires (verify-review 2026-07-18).
+                        && desired_Velocity == 0
                         && Math.abs(getShooterFlywheelVelocity()) > ShooterSubsystemConstants.HOOD_LOWER_MAX_SURFACE_SPEED) {
-                    hoodTarget = currentHoodAngle; // flywheels too fast -- hold, don't lower yet
+                    hoodTarget = currentHoodAngle; // stow drop while flywheels fast -- hold, don't lower yet
                 }
-                double anglePID = shooterAnglePID.calculate(currentHoodAngle, hoodTarget);
-                    shooterAngle.setVoltage(MathUtil.clamp(anglePID, -12, 12));
+                // FEEDBACK SANITY GATE (verify-review 2026-07-18): only close the loop on a raw
+                // reading inside the calibrated band. An unplugged/silent absolute encoder reads 0,
+                // which the two-point map turns into ~105 deg -- the PID would then drive DOWN at
+                // 6 V into the bottom hard stop forever (the MIN guard never fires because the
+                // mapped angle reads high, not low) and stall the fragile NEO 550 at its 20 A
+                // limit. Out-of-band or NaN (comparisons fail) -> 0 V; brake idle holds the hood.
+                boolean hoodFeedbackValid = rawHood >= ShooterSubsystemConstants.HOOD_RAW_SANE_MIN
+                        && rawHood <= ShooterSubsystemConstants.HOOD_RAW_SANE_MAX;
+                double hoodVolts = 0; // kill switch / invalid feedback -> 0 V (brake idle holds)
+                if (HOOD_CLOSED_LOOP_ENABLED && hoodFeedbackValid) {
+                    double anglePID = shooterAnglePID.calculate(currentHoodAngle, hoodTarget);
+                    // Gravity LIFT feedforward: the pure-P loop under-drives against gravity at modest
+                    // errors (a 20 deg error only asks 5.5 V, below the ~7 V breakaway), so add a
+                    // constant up-bias while the hood is still meaningfully BELOW its target. Gated on
+                    // error > ANGLE_TOLERANCE so it drops to 0 at the target -- the hood can never be
+                    // driven PAST the target into the MAX_ANGLE belt-skip zone by this term. Off while
+                    // lowering (error <= 0), so the gravity-assisted auto-descent stays gentle.
+                    double liftFF = (hoodTarget - currentHoodAngle) > ShooterSubsystemConstants.ANGLE_TOLERANCE
+                        ? ShooterSubsystemConstants.HOOD_RAISE_FF_VOLTS
+                        : 0;
+                    // ASYMMETRIC speed cap (2026-07-18): raising fights gravity, lowering is gravity-
+                    // assisted, so the UP stroke gets more voltage (HOOD_MAX_UP_VOLTAGE) than the DOWN
+                    // stroke (HOOD_MAX_DOWN_VOLTAGE). A symmetric 6 V could not lift the hood at all
+                    // (it sat fully down during the feed shot). Positive output raises the hood, so it
+                    // is capped at +UP; negative lowers, capped at -DOWN.
+                    hoodVolts = MathUtil.clamp(anglePID + liftFF, -ShooterSubsystemConstants.HOOD_MAX_DOWN_VOLTAGE, ShooterSubsystemConstants.HOOD_MAX_UP_VOLTAGE);
+                    // HARD travel guard (team request 2026-07-18: "by no means exceed the max angle"
+                    // -- the hood was over-extending and skipping the belt). Positive volts raise the
+                    // hood: once at/above MAX_ANGLE never drive UP, once at/below MIN_ANGLE never drive
+                    // DOWN, whatever the PID asks. MAX_ANGLE sits ~6.5 deg below the physical 44.5
+                    // stop, so even a little coast after the cut never reaches the stop / skips the belt.
+                    if (currentHoodAngle >= ShooterSubsystemConstants.MAX_ANGLE && hoodVolts > 0) {
+                        hoodVolts = 0;
+                    }
+                    if (currentHoodAngle <= ShooterSubsystemConstants.MIN_ANGLE && hoodVolts < 0) {
+                        hoodVolts = 0;
+                    }
+                }
+                shooterAngle.setVoltage(hoodVolts);
             //At-speed / at-angle kicker gates -- instance state (the mutable statics in
             // ShooterSubsystemConstants are DELETED; the hopper polls isReadyToShoot()).
                 velReached =
@@ -733,6 +816,7 @@ public class ShooterSubsystem extends SubsystemBase{
             degreedToAlignToTargEntry.setDouble(degreesToAlignToTarget);
             desiredVelReachedEntry.setBoolean(velReached);
             desiredAngleReachedEntry.setBoolean(angleReached);
+            rawHoodEncoderEntry.setDouble(shooterAngleEncoder.getPosition());
             // Desired Velocity/Angle double as INPUTS in live-data mode (enableComp reads
             // them back above) -- only echo the real setpoints when NOT in that mode, so a
             // dashboard edit is never stomped mid-tune.

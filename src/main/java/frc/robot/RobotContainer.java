@@ -20,11 +20,13 @@ import edu.wpi.first.wpilibj2.command.button.CommandXboxController;
 import edu.wpi.first.wpilibj2.command.button.RobotModeTriggers;
 
 import frc.robot.Constants.TunerConstants;
+import frc.robot.Constants.SubsystemConstants.Vision;
 import frc.robot.commands.CommandSwerveDrivetrain;
 import frc.robot.subsystems.misc.HopperSubsystem;
 import frc.robot.subsystems.misc.IntakeSubsystem;
 import frc.robot.subsystems.misc.MatchStatus;
 import frc.robot.subsystems.misc.ShooterSubsystem;
+import frc.robot.subsystems.utility.LimelightThermalManager;
 
 public class RobotContainer {
     // Global 20% slowdown (team request 2026-07-17): translation AND rotation capped at 80% of
@@ -47,11 +49,16 @@ public class RobotContainer {
     private final SwerveRequest.Idle shotFreeze = new SwerveRequest.Idle();
 
     // Smooth translation commands: caps how fast the drive command can change (units: full-stick
-    // fraction per second; 4.0 = stop-to-full in 0.25 s). Softens acceleration spikes so 4 Krakens
+    // fraction per second; 2.5 = stop-to-full in 0.4 s). Softens acceleration spikes so 4 Krakens
     // don't slam their supply limit together (brownout/wheel-slip protection) without feeling laggy.
+    // Lowered 4.0 -> 2.5 (2026-07-18): 4.0 allowed ~15 m/s^2 equivalent -- above the physical
+    // traction limit, so it never actually constrained current, and a full reversal (2.0 axis
+    // units) fit entirely inside the drives' supply burst window. At 2.5 a reversal takes 0.8 s,
+    // outlasting the 0.25 s burst window so the 30 A fold-back engages mid-maneuver. ~9.5 m/s^2
+    // equivalent still exceeds real traction accel, so the stick should not feel laggy.
     // One limiter PER AXIS -- a single shared limiter cross-couples X and Y. Rotation is left
     // unlimited so turning stays crisp. TODO tune rate (per-second) to driver preference on robot.
-    private static final double kTranslationSlewRate = 4.0;
+    private static final double kTranslationSlewRate = 2.5;
     private final SlewRateLimiter xSlewLimiter = new SlewRateLimiter(kTranslationSlewRate);
     private final SlewRateLimiter ySlewLimiter = new SlewRateLimiter(kTranslationSlewRate);
 
@@ -85,6 +92,10 @@ public class RobotContainer {
     // Match clock / HUB-shift tracker: publishes Match/* to NT for the companion field
     // map and rumbles the controller 3-2-1 before each HUB swap. No motors, no bindings.
     private final MatchStatus matchStatus = new MatchStatus(joystick2.getHID());
+    // Limelight LED-off + shooter-idle low-res pipeline + Hailo over-temp warning. Auto-runs
+    // via the scheduler; "shooter active" = flywheels commanded to spin (needs full-res ranging).
+    public final LimelightThermalManager limelightThermal =
+        new LimelightThermalManager(Vision.CAM_LIMELIGHT, () -> shoterSS.getDesiredFlywheelVelocity() != 0);
 
     public RobotContainer() {
         // Build the auto chooser AFTER the drivetrain constructor has run AutoBuilder.configure.
@@ -131,15 +142,17 @@ public class RobotContainer {
         // binding list — no other keybinds may exist):
         //   L stick     = translate (field-centric)      R stick X = rotate  (reverted 2026-07-17)
         //   LB          = toggle X-lock brake
-        //   LT (hold)   = intake (slider out -> rollers + belts + low kicker); release = stow
+        //   LT (hold)   = intake (slider out -> rollers + belts; kicker stays OFF); release = stow
         //   Y (hold)    = outtake (same choreography, rollers out); release = stow
         //   X           = manual stow
         //   RT (hold)   = precision vision shot: AUTO-AIM in place, THEN freeze drive + feed
-        //                 (kicker UNGATED). Intake disabled all hold; drive disabled once aimed.
-        //   RB (hold)   = fixed feed shot (38 deg hood + fixed speed). Kicker UNGATED.
-        //                 Full drive + intake lockout (blind feed -- no target to aim at).
-        //   (Both updated 2026-07-17.)
+        //                 (belts always, kicker at-speed-gated). Intake disabled all hold;
+        //                 drive disabled once aimed.
+        //   RB (hold)   = fixed feed shot (25 deg hood + fixed speed; belts always, kicker
+        //                 at-speed-gated). Full drive + intake lockout (blind feed).
+        //   (Kicker at-speed gate added 2026-07-18 by team request.)
         //   B (hold)    = manual hopper belts + kicker, ungated
+        //   VIEW (hold) = hopper unjam: reverse belts + kicker (added 2026-07-18)
         //   A / DPAD-UP (hold) = search-align to our alliance's scoring tag
         //   DPAD-LEFT/RIGHT    = rotate exactly +90 / -90 deg
         //   MENU        = manual heading re-zero (backstop; AprilTags auto-zero when in view)
@@ -214,9 +227,9 @@ public class RobotContainer {
 
         //INTAKE + HOPPER FEED
             // LT (hold) = intake: slider extends until stall-stop, THEN rollers spin in AND
-            // belts + LOW-duty kicker run (intakeFeedCommand starts only after intakeCommand's
-            // sequence finishes, i.e. never while the slider moves). Release: the hold cancels
-            // the group (intakeFeedCommand's end stops belts + kicker), then stowCommand stops
+            // belts run -- kicker stays OFF during intake (team spec 2026-07-18; intakeFeedCommand
+            // starts only after intakeCommand's sequence finishes, i.e. never while the slider
+            // moves). Release: the hold cancels the group (belts stop), then stowCommand stops
             // the rollers unconditionally FIRST and retracts the slider until stall. A stalled
             // slider move is complete -- stow never re-pushes.
             // finallyDo = interrupt-safety: if another binding steals the shared hopper
@@ -236,6 +249,10 @@ public class RobotContainer {
             joystick2.x().onTrue(intakeSS.stowCommand());
             // B (hold) = MANUAL hopper run: belts + kicker, UNGATED (works with shooter idle).
             joystick2.b().whileTrue(hopperSS.manualRunCommand());
+            // VIEW (hold) = UNJAM: reverse belts + kicker at low duty to back a stuck ball out.
+            // (Direction-test diagnostics removed 2026-07-18 after the fix was confirmed: the
+            // belts were fighting from opposite flashed inversion; both motors now same-sign.)
+            joystick2.back().whileTrue(hopperSS.unjamCommand());
 
         //SHOOTER (re-enabled by team directive 2026-07-16)
             // SHOT LOCKOUT (team request 2026-07-17): while RT or RB is held, ONLY the shooter +
@@ -248,8 +265,8 @@ public class RobotContainer {
             //   phase 1 -- rotate IN PLACE to the vision firing bearing (aimUntilAligned); intake
             //             locked, flywheels already spinning up, NOTHING feeds yet.
             //   phase 2 -- once aimed on a REAL target: FREEZE the drivetrain (Idle -> brake) and
-            //             feed (belts while hasShotTarget, kicker UNGATED). Drive is disabled only
-            //             AFTER the aim is made, so the shot can never fire mid-rotation.
+            //             feed (belts always, kicker once flywheels reach speed). Drive is disabled
+            //             only AFTER the aim is made, so the shot can never fire mid-rotation.
             //   No tag in view -> aim never latches -> holds heading, never freezes/feeds (release
             //   to exit; use A / DPAD to acquire a tag first). Release: flywheels coast, hood
             //   recesses once they slow (hood interlock), drive + intake unlock. Strafe is OFF
@@ -269,16 +286,25 @@ public class RobotContainer {
                                     && shoterSS.isAimedAtTarget())
                             .andThen(Commands.parallel(
                                 drivetrain.applyRequest(() -> shotFreeze),
-                                hopperSS.feedShooterCommand(shoterSS::hasShotTarget, () -> true))))
+                                // BELTS UNGATED (team request 2026-07-18: "make sure the hopper
+                                // runs whenever the shooter runs"): belts always feed staged fuel
+                                // during the hold. KICKER gated on AT-SPEED (team request
+                                // 2026-07-18: "kicker only starts after the flywheels are up to
+                                // speed") -- see isFlywheelAtSpeed(); a refused shot commands
+                                // velocity 0 and can never read at-speed, so this also keeps the
+                                // CIM out of the stationary wheel nip (Victor SPX has no current
+                                // sensing; CIM stall ~131 A). Tighten to shoterSS::isReadyToShoot
+                                // once the hood encoder is repaired and tolerances are trusted.
+                                hopperSS.feedShooterCommand(() -> true, shoterSS::isFlywheelAtSpeed))))
                     .withInterruptBehavior(Command.InterruptionBehavior.kCancelIncoming))
                 .onFalse(shoterSS.stopShooterCommand());
-            // RB (hold) = fixed feed shot: hood 38 deg + fixed tunable feed speed, belts always,
-            // kicker UNGATED. Same drive + intake lockout as RT. Release: flywheels coast, hood
-            // recesses once they slow.
+            // RB (hold) = fixed feed shot: hood 25 deg (RB_FEED_ANGLE) + fixed tunable feed speed, belts always,
+            // kicker gated on AT-SPEED (team request 2026-07-18). Same drive + intake lockout as
+            // RT. Release: flywheels coast, hood recesses once they slow.
             joystick2.rightBumper()
                 .whileTrue(shoterSS.feedAngleShotCommand()
                     .alongWith(
-                        hopperSS.feedShooterCommand(() -> true, () -> true),
+                        hopperSS.feedShooterCommand(() -> true, shoterSS::isFlywheelAtSpeed),
                         lockDriveAndIntake())
                     .withInterruptBehavior(Command.InterruptionBehavior.kCancelIncoming))
                 .onFalse(shoterSS.stopShooterCommand());
