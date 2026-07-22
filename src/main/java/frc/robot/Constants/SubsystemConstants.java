@@ -243,19 +243,16 @@ public class SubsystemConstants {
                 // hood is ever re-anchored.
                 public static double HOOD_RAW_SANE_MIN = 96.0;
                 public static double HOOD_RAW_SANE_MAX = 208.0;
-            //SHOT MODEL (distance -> velocity; shot-math spec 2026-07-16, numerically integrated
-            // quadratic-drag ballistics for the OFFICIAL FUEL ball -- 5.91 in / 0.203-0.227 kg
-            // foam, Cd~0.5, manual sec.5.10.1 -- validated against the no-drag closed form.
-            // Angle rule: FIXED at MAX_ANGLE (was 44.5 deg; now 38 after the belt-skip inset --
-            // see SHOOTER CONSTRAINTS). Spec 2.4 swept 25-44.5 deg over the whole legal envelope:
-            // 44.5 needed the LOWEST speed AND the steepest entry everywhere, so scoring never
-            // varies the hood; its lower range exists only for stowing.
-            // TODO STALE AT 38 DEG: the SCORE drag/ToF fits below and MIN_SCORE_DISTANCE_METERS
-            // were derived at 44.5 deg. At 38 deg the descending-entry envelope check barely
-            // passes at 3.0 m (~2.5% margin vs ~29% before), and the spec-2.4 optimality claim
-            // is unverified. Re-run the fit generator at 38 deg (or restore the varying-angle
-            // tables) before trusting SCORE ballistics; SHOT_SPEED_SCALE is only a speed knob
-            // and cannot fix an angle-mismatched drag fit.)
+            //SHOT MODEL (distance -> velocity; quadratic-drag ballistics for the OFFICIAL FUEL
+            // ball -- 5.91 in / 0.203-0.227 kg foam, Cd~0.5, manual sec.5.10.1 -- validated
+            // against the no-drag closed form. Angle rule: FIXED at MAX_ANGLE (38 deg since the
+            // belt-skip inset -- see SHOOTER CONSTRAINTS).
+            // REFIT 2026-07-21 AT 38 DEG (docs/shot-model/refit_38.py): every drag/ToF fit and
+            // MIN_SCORE_DISTANCE_METERS below is now derived AT 38 (the old 44.5-deg fits
+            // commanded ~6% too little ball speed everywhere and a 3.0 m minimum whose entry
+            // was a grazing -2.5 deg). ShotModelTest pins the model to the integrator truth --
+            // if MAX_ANGLE ever changes again, re-run refit_38.py at the new angle and update
+            // the fits AND the test pins together.
                 // Ball release height above carpet. User-measured 2026-07-10: bottom of swerve
                 // to the UNEXTENDED hood = 27 in. TODO re-measure to the actual ball exit point.
                 public static final double SHOT_RELEASE_HEIGHT_METERS = Units.inchesToMeters(27);
@@ -263,22 +260,25 @@ public class SubsystemConstants {
                 // Biggest single unknown -- every model velocity scales with it; tune FIRST,
                 // drag slopes LAST. TODO tune on robot (0.45-0.55).
                 public static double SHOT_EFFICIENCY = 0.50;
-                // Distance-dependent drag multipliers replacing the old fixed 1.05 fudge (exact
-                // only at ~4.7 m; at 3 m it shot 0.25 m long = a miss, at 6.2 m 0.21 m short).
-                // Linear fits to the integrator, residual < 0.03% (score) / < 0.2% (feed):
-                //   score: mult(d) = 1.0002 + 0.01063*d, fitted over 2.4-6.2 m (spec 2.2)
-                //   feed:  mult(d) = 0.9955 + 0.0113*d, fitted over 4-9 m (spec 3.2)
-                // Endpoints tunable on robot; the spec 2.2/3.2 tables are the tuning reference.
-                public static double SCORE_DRAG_MULT_BASE = 1.000;
-                public static double SCORE_DRAG_MULT_PER_METER = 0.0106;   // 1/m
-                public static double FEED_DRAG_MULT_BASE = 0.9955;
-                public static double FEED_DRAG_MULT_PER_METER = 0.0113;    // 1/m
-                // SCORE envelope to the own hub center (m). Below 3.0 the ball can't fit through
-                // the opening within the speed/angle tolerance budget (physical floor 2.63 m;
-                // dead zone 1.0-3.0 m is real -- drivers must back off ~2 m from the hub face).
+                // Distance-dependent drag multipliers (ball-speed ratio true/no-drag), linear
+                // fits to the integrator AT 38 DEG (refit_38.py 2026-07-21):
+                //   score: mult(d) = 0.9988 + 0.01027*d, fitted over 3.5-6.2 m (residual 0.01%)
+                //   feed:  mult(d) = 0.9954 + 0.01063*d, fitted over 4-9 m   (residual 0.05%)
+                // Efficiency-independent (it divides out afterward). Endpoints tunable on robot
+                // within ~2-3% -- beyond that re-run refit_38.py (ShotModelTest pins at 3%).
+                public static double SCORE_DRAG_MULT_BASE = 0.9988;
+                public static double SCORE_DRAG_MULT_PER_METER = 0.01027;  // 1/m
+                public static double FEED_DRAG_MULT_BASE = 0.9954;
+                public static double FEED_DRAG_MULT_PER_METER = 0.01063;   // 1/m
+                // SCORE envelope to the own hub center (m). RAISED 3.0 -> 3.5 in the 38-deg
+                // refit (2026-07-21): at 38 deg the descending-entry floor is 2.93 m, and the
+                // window analysis (refit_38.py) shows 3.0 m enters at a grazing -2.5 deg with a
+                // +-0.9% speed window -- the +-0.2 m/s kicker gate alone eats that, so 3.0-3.4 m
+                // shots were near-guaranteed misses. 3.5 m enters at -9 deg with +-2.2%.
+                // DRIVER-FACING: the close dead zone grew -- back off ~3 m from the hub FACE.
                 // Above 6.2 the robot cannot legally be in its zone (G407 geometric limit 6.14 m).
                 // Outside the envelope the model REFUSES (velocity 0 -> no belts, no kicker).
-                public static double MIN_SCORE_DISTANCE_METERS = 3.0;   // [derived] TODO tune on robot
+                public static double MIN_SCORE_DISTANCE_METERS = 3.5;   // [derived at 38 deg] TODO tune on robot
                 public static final double MAX_SCORE_DISTANCE_METERS = 6.2;
                 // FEED distance clamp (m): outside 4-9 command the clamped endpoint instead of
                 // refusing -- a slightly-short lob still lands in friendly territory. [assumed]
@@ -306,12 +306,14 @@ public class SubsystemConstants {
                 // not lift the hood against gravity). MUST stay < MAX_ANGLE. TODO retune
                 // RB_FEED_SURFACE_SPEED for this flatter 25 deg lob on robot.
                 public static double RB_FEED_ANGLE = 25.0;           // deg (must be < MAX_ANGLE)
-                // Time-of-flight linear fits (s) for moving-shot compensation, good to ~+-0.03 s
-                // against the integrator (spec 5): score 0.185 + 0.138*d, feed 0.618 + 0.093*d.
-                public static double SCORE_TOF_BASE_SEC = 0.185;
-                public static double SCORE_TOF_SEC_PER_METER = 0.138;
-                public static double FEED_TOF_BASE_SEC = 0.618;
-                public static double FEED_TOF_SEC_PER_METER = 0.093;
+                // Time-of-flight linear fits (s) for moving-shot compensation, refit AT 38 DEG
+                // (refit_38.py 2026-07-21, residual <= 0.011 s): score 0.188 + 0.115*d,
+                // feed 0.583 + 0.081*d. (The stale 44.5-deg fits over-read ToF ~14% at range,
+                // inflating the moving-shot lead.)
+                public static double SCORE_TOF_BASE_SEC = 0.188;
+                public static double SCORE_TOF_SEC_PER_METER = 0.115;
+                public static double FEED_TOF_BASE_SEC = 0.583;
+                public static double FEED_TOF_SEC_PER_METER = 0.081;
                 // Moving-shot radial compensation (spec 5): d_eff = d + gain * v_radial * ToF,
                 // two fixed-point iterations, clamped. Gain 0 disables while tuning everything
                 // else. Beyond +-1.5 m the robot moves >~1.9 m/s and the shot shouldn't be

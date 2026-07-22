@@ -1,7 +1,12 @@
 # Shot Model — distance → (hood angle, flywheel speed)  (2026-07-17)
 
-Why the hood angle now varies with distance, where the numbers came from, and how to tune
-them on the robot. Supersedes the 2026-07-16 fixed-max-angle rule.
+> **⚠ REPO-STATE NOTE (2026-07-21):** this README describes the **varying-angle bank-shot
+> policy from the 2026-07-18 backup session, which was NEVER ported into this repo** — the
+> `*_BY_DIST` tables, `SHOT_SPEED_SCALE`, and `ShotTableTest` it mentions do not exist here.
+> The repo's shipped model is the **fixed-38° closed form + linear drag fits** in
+> `ShooterSubsystemConstants`, refit at 38° by [`refit_38.py`](refit_38.py) and pinned by
+> `ShotModelTest`. Keep reading only if porting the bank-shot tables from the backup
+> (`C:\FRC\Helios-2026-backup-2026-07-18\`); `ballistics.py` is that policy's generator.
 
 ## Verified hub geometry (official sources)
 

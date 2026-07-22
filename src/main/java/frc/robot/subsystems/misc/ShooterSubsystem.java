@@ -355,13 +355,13 @@ public class ShooterSubsystem extends SubsystemBase{
 
         // Shot model core (SHOT MODEL block in ShooterSubsystemConstants has the derivation).
         // No-drag closed form for exit speed through (distance, deltaH) at the FIXED max hood
-        // angle (spec 2.4 at the then-44.5 deg MAX; now 38 after the belt-skip inset -- fits
-        // are stale, see the SHOT MODEL TODO in constants; steepest-entry claim held for the
-        // envelope), times the distance-fitted drag multiplier, converted to flywheel SURFACE
-        // speed (m/s). Returns 0 (= refuse: CoastOut path, at-speed gate never opens, kicker
-        // never feeds) when the ball cannot cross the target height DESCENDING or the motor
-        // velocity ceiling is exceeded.
-        private static double modelSurfaceSpeed(double distance, double deltaH, double dragMult){
+        // angle (38 deg; fits + envelope refit at 38 on 2026-07-21 -- docs/shot-model/
+        // refit_38.py), times the distance-fitted drag multiplier, converted to flywheel
+        // SURFACE speed (m/s). Returns 0 (= refuse: CoastOut path, at-speed gate never opens,
+        // kicker never feeds) when the ball cannot cross the target height DESCENDING or the
+        // motor velocity ceiling is exceeded.
+        // Package-private for ShotModelTest (pins this against the drag integrator's truth).
+        static double modelSurfaceSpeed(double distance, double deltaH, double dragMult){
             double theta = Math.toRadians(ShooterSubsystemConstants.MAX_ANGLE);
             double reach = distance * Math.tan(theta);
             // Must cross the target height DESCENDING (past apex): d*tan(theta) > 2*deltaH.
