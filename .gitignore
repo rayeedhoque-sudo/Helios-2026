@@ -188,3 +188,10 @@ compile_commands.json
 
 # Driver companion app lives outside the robot repo
 driver-companion/
+
+# Local agent permissions (machine-specific; .claude/skills/ IS tracked)
+.claude/settings.local.json
+
+# Session debris: Limelight frame capture + sim GUI DS state
+frame_test.bin
+simgui-ds.json
