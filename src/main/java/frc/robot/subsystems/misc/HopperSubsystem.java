@@ -84,6 +84,10 @@ public class HopperSubsystem extends SubsystemBase{
             SparkMaxConfig hopperConfig = new SparkMaxConfig();
             hopperConfig.smartCurrentLimit(20);
             hopperConfig.idleMode(IdleMode.kCoast);
+            // 0.25 s open-loop ramp, same inrush softening every sibling motor already has
+            // (kicker, intake roller/slider) -- the belts were the one unramped pair
+            // (power-limiting-review nit). Nothing gates on belt spin-up time.
+            hopperConfig.openLoopRampRate(0.25);
             hopperConfig.disableFollowerMode();
             // INVERSION: SAME sign for BOTH motors -- measured on-robot 2026-07-18. With A=false/
             // B=true (the "opposite inversion" the Hardware-Data-Sheet note suggested) the pair
