@@ -23,10 +23,6 @@ import frc.robot.Constants.SubsystemConstants.IntakeSubsystemConstants;
 
 public class IntakeSubsystem extends SubsystemBase {
 
-    //Type
-        boolean enableComp;
-        boolean enableTest = false;
-    
     //Intake Motor
         private final TalonFX intakeMotor = new TalonFX(IntakeSubsystemConstants.INTAKE_MOTOR_ID);
         // Active roller stop for STOW: the Coast neutral mode let the rollers visibly
@@ -40,12 +36,13 @@ public class IntakeSubsystem extends SubsystemBase {
         }
     
     //Tracker Variables
-        private IntakeSSTATE currentState;
+        // (currentState DELETED 2026-07-21: it was never written after the constructor, so
+        // its dashboard entry sat frozen at STOW forever. periodic() actuates desiredState
+        // directly every loop -- there is no separate observed state to display.)
         private IntakeSSTATE desiredState;
 
     //Data
         private ShuffleboardTab IntakeSubsystemTab = Shuffleboard.getTab("Intake Subsystem Tab");
-        private GenericEntry currentStateEntry;
         private GenericEntry desiredStateEntry;
         private GenericEntry sliderCurrentEntry;
         private GenericEntry sliderVelocityEntry;
@@ -105,12 +102,10 @@ public class IntakeSubsystem extends SubsystemBase {
             intakeSliderMotor.configure(sliderConfig, ResetMode.kNoResetSafeParameters, PersistMode.kPersistParameters);
 
         //Initializing Tracker Variables
-            currentState = IntakeSSTATE.STOW_STATE;
             desiredState = IntakeSSTATE.STOW_STATE;
-        
+
         // Initializing Shuffleboard Entries
             desiredStateEntry = IntakeSubsystemTab.add("Desired Intake State", desiredState.name()).getEntry();
-            currentStateEntry = IntakeSubsystemTab.add("Current Intake State", currentState.name()).getEntry();
             sliderCurrentEntry = IntakeSubsystemTab.add("Slider Current (A)", 0.0).getEntry();
             sliderVelocityEntry = IntakeSubsystemTab.add("Slider Velocity (motor rpm)", 0.0).getEntry();
 
@@ -251,7 +246,6 @@ public class IntakeSubsystem extends SubsystemBase {
                     intakeMotor.setControl(rollerBrake);
                 }
             //Data
-                currentStateEntry.setString(currentState.name());
                 desiredStateEntry.setString(desiredState.name());
                 sliderCurrentEntry.setDouble(intakeSliderMotor.getOutputCurrent());
                 sliderVelocityEntry.setDouble(intakeSliderMotor.getEncoder().getVelocity());

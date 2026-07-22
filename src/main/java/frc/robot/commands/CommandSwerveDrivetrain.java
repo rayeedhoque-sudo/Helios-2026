@@ -3,7 +3,6 @@ package frc.robot.commands;
 import static edu.wpi.first.units.Units.*;
 
 import java.util.Optional;
-import java.util.OptionalDouble;
 import java.util.Set;
 import java.util.function.BooleanSupplier;
 import java.util.function.DoubleSupplier;
@@ -41,7 +40,6 @@ import edu.wpi.first.wpilibj2.command.Command;
 import edu.wpi.first.wpilibj2.command.Commands;
 import edu.wpi.first.wpilibj2.command.Subsystem;
 import edu.wpi.first.wpilibj2.command.sysid.SysIdRoutine;
-import frc.robot.Robot;
 import frc.robot.Constants.FieldConstants;
 import frc.robot.Constants.SubsystemConstants.Vision;
 import frc.robot.Constants.TunerConstants.TunerSwerveDrivetrain;
@@ -542,56 +540,9 @@ public class CommandSwerveDrivetrain extends TunerSwerveDrivetrain implements Su
         );
     }
 
-    /**
-     * RT AUTO-AIM drive layer (team request 2026-07-17): translation stays on the driver's
-     * sticks the whole time; the HEADING auto-locks onto the shooter's firing bearing
-     * whenever one exists (re-sampled every loop, so strafing continuously re-corrects the
-     * aim), and falls back to the driver's manual rotation stick when there is no aim
-     * target. Runs until interrupted -- bind whileTrue alongside the shot command.
-     *
-     * Frames: the aim heading arrives BLUE-ORIGIN (computed from pose), so the facing
-     * request uses the BlueAlliance perspective -- which also makes it interpret
-     * VelocityX/Y as blue-frame. The sticks are OPERATOR-frame, so they are rotated by
-     * getOperatorForwardDirection() (identity on blue, 180 deg on red) before being passed.
-     * The manual branch keeps the default OperatorPerspective and takes the sticks raw.
-     *
-     * @param velXMps           shaped/scaled operator-frame forward velocity (m/s)
-     * @param velYMps           shaped/scaled operator-frame left velocity (m/s)
-     * @param manualRotRadPerSec shaped rotation rate (rad/s) used when no aim target exists
-     * @param aimHeadingDeg     blue-origin firing bearing, empty = no target (manual rotation)
-     */
-    public Command driveWithAimLockCommand(DoubleSupplier velXMps, DoubleSupplier velYMps,
-            DoubleSupplier manualRotRadPerSec, Supplier<OptionalDouble> aimHeadingDeg){
-        var aimRequest = new SwerveRequest.FieldCentricFacingAngle();
-        // Same heading servo as rotateToAngle/searchAndAlign. Radians in, rad/s out.
-        aimRequest.HeadingController.setPID(5.0, 0.0, 0.0); // TODO tune on robot
-        aimRequest.HeadingController.enableContinuousInput(-Math.PI, Math.PI);
-        aimRequest.MaxAbsRotationalRate = 1.5 * Math.PI; // rad/s. TODO tune on robot
-        aimRequest.ForwardPerspective = SwerveRequest.ForwardPerspectiveValue.BlueAlliance;
-        aimRequest.DriveRequestType = DriveRequestType.Velocity; // closed-loop, like the default drive
-        var manualRequest = new SwerveRequest.FieldCentric()
-            .withDriveRequestType(DriveRequestType.Velocity); // OperatorPerspective default: raw sticks
-
-        return run(() -> {
-            OptionalDouble target = aimHeadingDeg.get();
-            if (target.isPresent()) {
-                // Operator-frame sticks -> blue frame (identity blue / 180 red), one source
-                // of truth: the drivetrain's own applied operator perspective.
-                Translation2d blueVel = new Translation2d(
-                        velXMps.getAsDouble(), velYMps.getAsDouble())
-                    .rotateBy(getOperatorForwardDirection());
-                setControl(aimRequest
-                    .withVelocityX(blueVel.getX())
-                    .withVelocityY(blueVel.getY())
-                    .withTargetDirection(Rotation2d.fromDegrees(target.getAsDouble())));
-            } else {
-                setControl(manualRequest
-                    .withVelocityX(velXMps.getAsDouble())
-                    .withVelocityY(velYMps.getAsDouble())
-                    .withRotationalRate(manualRotRadPerSec.getAsDouble()));
-            }
-        });
-    }
+    // (driveWithAimLockCommand DELETED 2026-07-21: unused since the 07-17 RT redesign to
+    // aim-then-freeze. If strafe-while-aiming ever comes back, restore it from git history
+    // at commit 1a88475 or earlier -- it handled the operator->blue frame rotation.)
 
     /**
      * AIM-then-stop for the precision shot (team request 2026-07-17: "auto-aim, THEN disable

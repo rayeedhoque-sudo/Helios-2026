@@ -86,7 +86,7 @@ public class RobotContainer {
 
     // Full robot: all subsystems constructed.
     public final CommandSwerveDrivetrain drivetrain = TunerConstants.createDrivetrain();
-    public final ShooterSubsystem shoterSS = new ShooterSubsystem(drivetrain);
+    public final ShooterSubsystem shooterSS = new ShooterSubsystem(drivetrain);
     public final IntakeSubsystem intakeSS = new IntakeSubsystem();
     public final HopperSubsystem hopperSS = new HopperSubsystem();
     // Match clock / HUB-shift tracker: publishes Match/* to NT for the companion field
@@ -95,7 +95,7 @@ public class RobotContainer {
     // Limelight LED-off + shooter-idle low-res pipeline + Hailo over-temp warning. Auto-runs
     // via the scheduler; "shooter active" = flywheels commanded to spin (needs full-res ranging).
     public final LimelightThermalManager limelightThermal =
-        new LimelightThermalManager(Vision.CAM_LIMELIGHT, () -> shoterSS.getDesiredFlywheelVelocity() != 0);
+        new LimelightThermalManager(Vision.CAM_LIMELIGHT, () -> shooterSS.getDesiredFlywheelVelocity() != 0);
 
     public RobotContainer() {
         // Build the auto chooser AFTER the drivetrain constructor has run AutoBuilder.configure.
@@ -130,7 +130,7 @@ public class RobotContainer {
         configureBindings();
 
         // Read-only current/temp/voltage publisher for the driver companion app (app optional).
-        new PowerTelemetry(drivetrain, shoterSS, intakeSS, hopperSS);
+        new PowerTelemetry(drivetrain, shooterSS, intakeSS, hopperSS);
     }
 
     private void configureBindings() {
@@ -210,13 +210,13 @@ public class RobotContainer {
             // alliance is seen, then face it (bearing re-sampled every loop). Two separate
             // command instances -- one instance on two triggers cross-cancels on release.
                 joystick2.a().whileTrue(drivetrain.searchAndAlignCommand(
-                    shoterSS::seesScoringTag,
+                    shooterSS::seesScoringTag,
                     () -> drivetrain.getState().Pose.getRotation().getDegrees()
-                          + shoterSS.getDegreesToAlignToTarget()));
+                          + shooterSS.getDegreesToAlignToTarget()));
                 joystick2.povUp().whileTrue(drivetrain.searchAndAlignCommand(
-                    shoterSS::seesScoringTag,
+                    shooterSS::seesScoringTag,
                     () -> drivetrain.getState().Pose.getRotation().getDegrees()
-                          + shoterSS.getDegreesToAlignToTarget()));
+                          + shooterSS.getDegreesToAlignToTarget()));
 
             // DPAD-LEFT/RIGHT = rotate exactly +90 (CCW) / -90 deg from the heading at press
             // (rotateBy defers, so the snapshot happens at schedule time, not at boot).
@@ -270,9 +270,9 @@ public class RobotContainer {
             //   No tag in view -> aim never latches -> holds heading, never freezes/feeds (release
             //   to exit; use A / DPAD to acquire a tag first). Release: flywheels coast, hood
             //   recesses once they slow (hood interlock), drive + intake unlock. Strafe is OFF
-            //   during aim -- pre-position for distance first. (driveWithAimLockCommand now unused.)
+            //   during aim -- pre-position for distance first.
             joystick2.rightTrigger()
-                .whileTrue(shoterSS.visionShotCommand()
+                .whileTrue(shooterSS.visionShotCommand()
                     .alongWith(
                         // Intake stays disabled the WHOLE hold (never intake mid-shot).
                         intakeSS.run(intakeSS::stopRollers),
@@ -280,10 +280,10 @@ public class RobotContainer {
                         // + feed. Ending the aim on the shooter's own gate (present + isAimed)
                         // means no target -> never ends -> never fires a blind shot.
                         drivetrain.aimUntilAligned(
-                                () -> shoterSS.getAimHeadingDegrees()
+                                () -> shooterSS.getAimHeadingDegrees()
                                     .orElse(drivetrain.getState().Pose.getRotation().getDegrees()),
-                                () -> shoterSS.getAimHeadingDegrees().isPresent()
-                                    && shoterSS.isAimedAtTarget())
+                                () -> shooterSS.getAimHeadingDegrees().isPresent()
+                                    && shooterSS.isAimedAtTarget())
                             .andThen(Commands.parallel(
                                 drivetrain.applyRequest(() -> shotFreeze),
                                 // BELTS UNGATED (team request 2026-07-18: "make sure the hopper
@@ -293,21 +293,21 @@ public class RobotContainer {
                                 // speed") -- see isFlywheelAtSpeed(); a refused shot commands
                                 // velocity 0 and can never read at-speed, so this also keeps the
                                 // CIM out of the stationary wheel nip (Victor SPX has no current
-                                // sensing; CIM stall ~131 A). Tighten to shoterSS::isReadyToShoot
+                                // sensing; CIM stall ~131 A). Tighten to shooterSS::isReadyToShoot
                                 // once the hood encoder is repaired and tolerances are trusted.
-                                hopperSS.feedShooterCommand(() -> true, shoterSS::isFlywheelAtSpeed))))
+                                hopperSS.feedShooterCommand(() -> true, shooterSS::isFlywheelAtSpeed))))
                     .withInterruptBehavior(Command.InterruptionBehavior.kCancelIncoming))
-                .onFalse(shoterSS.stopShooterCommand());
+                .onFalse(shooterSS.stopShooterCommand());
             // RB (hold) = fixed feed shot: hood 25 deg (RB_FEED_ANGLE) + fixed tunable feed speed, belts always,
             // kicker gated on AT-SPEED (team request 2026-07-18). Same drive + intake lockout as
             // RT. Release: flywheels coast, hood recesses once they slow.
             joystick2.rightBumper()
-                .whileTrue(shoterSS.feedAngleShotCommand()
+                .whileTrue(shooterSS.feedAngleShotCommand()
                     .alongWith(
-                        hopperSS.feedShooterCommand(() -> true, shoterSS::isFlywheelAtSpeed),
+                        hopperSS.feedShooterCommand(() -> true, shooterSS::isFlywheelAtSpeed),
                         lockDriveAndIntake())
                     .withInterruptBehavior(Command.InterruptionBehavior.kCancelIncoming))
-                .onFalse(shoterSS.stopShooterCommand());
+                .onFalse(shooterSS.stopShooterCommand());
     }
 
     /**
