@@ -63,6 +63,13 @@ public class RobotContainer {
     private final SlewRateLimiter xSlewLimiter = new SlewRateLimiter(kTranslationSlewRate);
     private final SlewRateLimiter ySlewLimiter = new SlewRateLimiter(kTranslationSlewRate);
 
+    // Test-mode hood jog (DPAD LEFT/RIGHT, team request 2026-07-21): rate-limits the
+    // CLOSED-LOOP hood setpoint toward MIN_ANGLE/MAX_ANGLE, 5 deg/sec. Shared by both
+    // directions -- reset to the current setpoint at the start of each hold (see
+    // configureTestBindings) so it always continues smoothly from wherever it left off.
+    private static final double kHoodJogRateDegPerSec = 5.0;
+    private final SlewRateLimiter hoodJogLimiter = new SlewRateLimiter(kHoodJogRateDegPerSec);
+
     // Intake-live slowdown: halve translation while the intake rollers spin (LT/Y hold,
     // intake or outtake) so the extended intake can't be rammed at full speed. Applied
     // BEFORE the slew limiter, so the 50% drop/restore ramps instead of stepping.
@@ -361,16 +368,26 @@ public class RobotContainer {
                 .whileTrue(shooterSS.feedAngleShotCommand()
                     .alongWith(hopperSS.feedShooterCommand(() -> true, shooterSS::isFlywheelAtSpeed)))
                 .onFalse(shooterSS.stopShooterCommand());
-            // DPAD LEFT / RIGHT (press) = hood to MIN / MAX, flywheels off. Closed-loop and
-            // fully interlocked (same path setAngleAndVelocityCommand always drives through)
-            // -- the safe way to verify the two hood encoder anchors (handoff on-robot
-            // verify item 2), never a raw open-loop jog.
+            // DPAD LEFT / RIGHT (hold) = jog the hood setpoint DOWN toward MIN / UP toward
+            // MAX at 5 deg/sec (team request 2026-07-21; was a snap-to-target press, changed
+            // to a jog). Flywheels stay off (setDesired_Angle doesn't touch velocity). Still
+            // fully closed-loop and interlocked -- hoodJogLimiter rate-limits the SETPOINT,
+            // not raw voltage; setDesired_Angle clamps to [MIN_ANGLE, MAX_ANGLE] and
+            // periodic() drives it through the same PID/hard-travel-guard/feedback-sanity-gate
+            // as every other shooter command. This is NOT the raw open-loop hood jog removed
+            // 2026-07-16 -- that bypassed closed-loop feedback entirely, which is why it was
+            // unsafe; this one cannot be driven past a limit no matter how long it's held.
+            // Release freezes the setpoint wherever it got to (deliberate -- lets the hood be
+            // parked at a precise angle to read the encoder anchors, handoff on-robot verify
+            // item 2), so there is no .onFalse() reset.
             joystick2.povLeft().and(RobotModeTriggers.test())
-                .onTrue(shooterSS.setAngleAndVelocityCommand(ShooterSubsystemConstants.MIN_ANGLE, 0))
-                .onFalse(shooterSS.stopShooterCommand());
+                .whileTrue(shooterSS.run(() -> shooterSS.setDesired_Angle(
+                        hoodJogLimiter.calculate(ShooterSubsystemConstants.MIN_ANGLE)))
+                    .beforeStarting(() -> hoodJogLimiter.reset(shooterSS.getDesiredAngle())));
             joystick2.povRight().and(RobotModeTriggers.test())
-                .onTrue(shooterSS.setAngleAndVelocityCommand(ShooterSubsystemConstants.MAX_ANGLE, 0))
-                .onFalse(shooterSS.stopShooterCommand());
+                .whileTrue(shooterSS.run(() -> shooterSS.setDesired_Angle(
+                        hoodJogLimiter.calculate(ShooterSubsystemConstants.MAX_ANGLE)))
+                    .beforeStarting(() -> hoodJogLimiter.reset(shooterSS.getDesiredAngle())));
     }
 
     /**

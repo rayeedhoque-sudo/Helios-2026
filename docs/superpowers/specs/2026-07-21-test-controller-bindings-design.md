@@ -1,7 +1,14 @@
 # Design — Test-mode mechanism bindings (single controller)
 
 Date: 2026-07-21
-Status: approved, pending implementation
+Status: implemented, committed (`78b9c71`); amended same day (see below)
+
+> **AMENDMENT (same day, 2026-07-21):** DPAD LEFT/RIGHT changed from a snap-to-MIN/MAX
+> press into a hold-to-jog control, 5 deg/sec, team request. The "Implementation shape"
+> bullet and table row below describing the original snap behavior are corrected in place
+> (not preserved as history — this is a same-day amendment before the design ever shipped
+> to drivers, not a post-hoc correction of a shipped decision). See the updated bullet and
+> row for the actual (jog) behavior.
 
 ## Problem
 
@@ -75,11 +82,17 @@ explicitly here so implementation has zero ambiguity to resolve:
   `retractSliderCommand()` are stall-cutoff/timeout sequences that run to their own natural
   completion regardless of how long the button is held — same verb already used for the
   DPAD ±90 `rotateBy` binds. A short press is enough; holding does nothing extra.
-- **`onTrue` + explicit `.onFalse()`** (DPAD LEFT, DPAD RIGHT): `setAngleAndVelocityCommand(...)`
-  is an instantaneous `runOnce` that only *latches* `desired_Angle`/`desired_Velocity` —
-  periodic() keeps driving toward that latched setpoint indefinitely with no self-stop.
-  Without an explicit `.onFalse(shooterSS.stopShooterCommand())`, releasing the button would
-  leave the hood parked at MIN/MAX forever.
+- **`whileTrue`, no `.onFalse()`** (DPAD LEFT, DPAD RIGHT): a `shooterSS.run(...)` command
+  (never finishes on its own) that, every loop while held, advances `desired_Angle` toward
+  MIN_ANGLE/MAX_ANGLE through a shared `SlewRateLimiter` (5 deg/sec) via the existing
+  `setDesired_Angle()` — still fully closed-loop and clamped, NOT the raw open-loop hood
+  jog removed 2026-07-16 (that bypassed position feedback entirely, which is why it was
+  unsafe; this rate-limits the *setpoint*, so it can never be driven past a limit no matter
+  how long it's held). `.beforeStarting()` resets the limiter to the CURRENT setpoint
+  (`getDesiredAngle()`) each time the hold starts, so direction changes continue smoothly
+  with no jump. Release freezes the setpoint wherever it got to — deliberate, so the hood
+  can be parked at a precise angle to read the encoder anchors (handoff on-robot verify
+  item 2) — so there is no `.onFalse()` reset.
 
 | Button | Mechanism | Command |
 |---|---|---|
@@ -92,8 +105,8 @@ explicitly here so implementation has zero ambiguity to resolve:
 | X (hold) | Hopper belts A+B together | `hopperSS.intakeFeedCommand()` |
 | B (hold) | Kicker alone | `hopperSS.kickerTestCommand()` |
 | Y (hold) | Manual test-fire (hood+flywheel+belts+kicker) | `shooterSS.feedAngleShotCommand().alongWith(hopperSS.feedShooterCommand(() -> true, shooterSS::isFlywheelAtSpeed))`, `.onFalse(shooterSS.stopShooterCommand())` |
-| DPAD LEFT (press) | Hood to MIN (flywheels off) | `shooterSS.setAngleAndVelocityCommand(MIN_ANGLE, 0)`, `.onFalse(shooterSS.stopShooterCommand())` |
-| DPAD RIGHT (press) | Hood to MAX (flywheels off) | `shooterSS.setAngleAndVelocityCommand(MAX_ANGLE, 0)`, `.onFalse(shooterSS.stopShooterCommand())` |
+| DPAD LEFT (hold) | Jog hood DOWN toward MIN, 5 deg/sec (flywheels off) | `shooterSS.run(() -> shooterSS.setDesired_Angle(hoodJogLimiter.calculate(MIN_ANGLE)))`, reset on start |
+| DPAD RIGHT (hold) | Jog hood UP toward MAX, 5 deg/sec (flywheels off) | `shooterSS.run(() -> shooterSS.setDesired_Angle(hoodJogLimiter.calculate(MAX_ANGLE)))`, reset on start |
 
 Free/unused in Test mode: A, Start, Back, LSB, RSB.
 
