@@ -155,7 +155,8 @@ public class RobotContainer {
         //   VIEW (hold) = hopper unjam: reverse belts + kicker (added 2026-07-18)
         //   A / DPAD-UP (hold) = search-align to our alliance's scoring tag
         //   DPAD-LEFT/RIGHT    = rotate exactly +90 / -90 deg
-        //   MENU        = manual heading re-zero (backstop; AprilTags auto-zero when in view)
+        //   MENU        = manual heading re-zero -- the ONLY in-match re-center (2026-07-21:
+        //                 AprilTag auto-seed now stops at the first enable after boot)
         // REMOVED 2026-07-16: DPAD hood jog, RT test shot. (MENU re-zero re-added 2026-07-17.)
 
         //DRIVE SUBSYSTEM
@@ -201,9 +202,10 @@ public class RobotContainer {
                 joystick2.leftBumper().toggleOnTrue(drivetrain.applyRequest(() -> brake));
 
             // MENU = manual heading re-zero (re-added 2026-07-17 by team request): point the
-            // SHOOTER SIDE away from the driver, press once. Normally the AprilTag auto-seed
-            // (CommandSwerveDrivetrain.updateVisionPose) keeps the pose zeroed on its own --
-            // MENU is the recovery path when vision is out (no tags visible / camera down).
+            // SHOOTER SIDE away from the driver, press once. Since 2026-07-21 (team request)
+            // the AprilTag auto-seed (CommandSwerveDrivetrain.updateVisionPose) stops at the
+            // first enable after boot, so MENU is the ONLY way to re-center the field during
+            // a match (collision skew, gyro drift, camera down -- all of it lands here).
                 joystick2.start().onTrue(drivetrain.runOnce(drivetrain::seedFieldCentric));
 
             // A / DPAD-UP (hold) = search-align: rotate slowly until a SCORING tag of OUR

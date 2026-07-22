@@ -65,6 +65,10 @@ public class CommandSwerveDrivetrain extends TunerSwerveDrivetrain implements Su
     private static final Rotation2d kRedAlliancePerspectiveRotation = Rotation2d.k180deg;
     /* Keep track if we've ever applied the operator perspective before or not */
     private boolean m_hasAppliedOperatorPerspective = false;
+    /* Latched true at the first enable after boot. Locks out the MT1 vision auto-seed for
+     * the rest of the match (team request 2026-07-21): once enabled, field centering can
+     * ONLY come from the driver's MENU press (seedFieldCentric). */
+    private boolean m_hasBeenEnabled = false;
 
     /* Swerve requests to apply during SysId characterization */
     private final SwerveRequest.SysIdSwerveTranslation m_translationCharacterization = new SwerveRequest.SysIdSwerveTranslation();
@@ -319,7 +323,11 @@ public class CommandSwerveDrivetrain extends TunerSwerveDrivetrain implements Su
                 m_hasAppliedOperatorPerspective = true;
             });
         }
-        // AprilTag pose correction: MT1 auto-seed + MegaTag2 X/Y fusion (team request
+        // First enable after boot latches the vision boot-seed off for good (see field doc).
+        if (DriverStation.isEnabled()) {
+            m_hasBeenEnabled = true;
+        }
+        // AprilTag pose correction: MT1 boot-seed + MegaTag2 X/Y fusion (team request
         // 2026-07-17). PREREQUISITE: Limelight camera mount pose set in its web UI --
         // see Vision.ENABLE_MEGATAG2_POSE.
         if (Vision.ENABLE_MEGATAG2_POSE) {
@@ -335,14 +343,15 @@ public class CommandSwerveDrivetrain extends TunerSwerveDrivetrain implements Su
     /**
      * AprilTag pose correction, two layers (both BLUE-origin -- PathPlanner and this
      * drivetrain keep the origin on the blue side for both alliances):
-     * 1. AUTO-SEED (MegaTag1): while DISABLED, adopt the full tag pose whenever it
-     *    disagrees with odometry (pre-match auto re-zero -- the robot is sitting still).
-     *    While ENABLED, re-seed the HEADING only, and only from a multi-tag solve while
-     *    nearly stationary (Vision.VISION_SEED_* gates) -- moving single-tag MT1 yaw is
-     *    noise the Pigeon exists to reject.
+     * 1. BOOT-SEED (MegaTag1): ONLY until the robot is first enabled after boot, adopt the
+     *    full tag pose whenever it disagrees with odometry (pre-match auto re-zero -- the
+     *    robot is sitting still). The in-match auto re-seed was REMOVED 2026-07-21 by team
+     *    request: once the match starts, field centering comes ONLY from the driver's MENU
+     *    press -- a mid-match heading skew (collision, gyro drift) stays until the driver
+     *    squares the robot up and presses MENU.
      * 2. FUSION (MegaTag2): continuous X/Y correction; yaw std dev is huge so the Pigeon
-     *    always owns heading between seeds.
-     * Safe to call with no Limelight connected. MENU re-zero remains the manual backstop.
+     *    always owns heading.
+     * Safe to call with no Limelight connected.
      */
     private void updateVisionPose() {
         // Feed the Limelight our gyro yaw (deg, blue-origin) -- required for MegaTag2.
@@ -354,28 +363,21 @@ public class CommandSwerveDrivetrain extends TunerSwerveDrivetrain implements Su
             // 1 -> EXTERNAL_SEED : Seed internal IMU
             // 4 -> INTERNAL_EXTERNAL_ASSIST : Use internal IMU + MT1
 
-        // ---- Layer 1: MT1 auto-seed ("auto re-zero") ----
-        PoseEstimate mt1 = LimelightHelpers.getBotPoseEstimate_wpiBlue(Vision.CAM_LIMELIGHT);
-        if (mt1 != null && mt1.tagCount >= 1
-                && mt1.avgTagDist <= Vision.VISION_SEED_MAX_TAG_DIST_METERS
-                && isInsideField(mt1.pose)) {
-            Pose2d current = this.getState().Pose;
-            double posErrMeters = mt1.pose.getTranslation().getDistance(current.getTranslation());
-            double yawErrDeg = Math.abs(mt1.pose.getRotation().minus(current.getRotation()).getDegrees());
-            if (DriverStation.isDisabled()) {
+        // ---- Layer 1: MT1 boot-seed (latched off at the first enable) ----
+        if (!m_hasBeenEnabled) {
+            PoseEstimate mt1 = LimelightHelpers.getBotPoseEstimate_wpiBlue(Vision.CAM_LIMELIGHT);
+            if (mt1 != null && mt1.tagCount >= 1
+                    && mt1.avgTagDist <= Vision.VISION_SEED_MAX_TAG_DIST_METERS
+                    && isInsideField(mt1.pose)) {
+                Pose2d current = this.getState().Pose;
+                double posErrMeters = mt1.pose.getTranslation().getDistance(current.getTranslation());
+                double yawErrDeg = Math.abs(mt1.pose.getRotation().minus(current.getRotation()).getDegrees());
                 if (posErrMeters > Vision.VISION_SEED_POS_TOL_METERS
                         || yawErrDeg > Vision.VISION_SEED_YAW_TOL_DEG) {
                     this.resetPose(mt1.pose);
                     visionTagCountPub.set(mt1.tagCount);
                     return; // pose buffer just reset -- skip fusing stale MT2 this loop
                 }
-            } else if (mt1.tagCount >= Vision.VISION_SEED_ENABLED_MIN_TAGS
-                    && isNearlyStationary()
-                    && yawErrDeg > Vision.VISION_SEED_YAW_TOL_DEG) {
-                // In-match: yaw only -- X/Y stays MT2's job (timestamped, filtered).
-                this.resetRotation(mt1.pose.getRotation());
-                visionTagCountPub.set(mt1.tagCount);
-                return;
             }
         }
 
@@ -392,16 +394,6 @@ public class CommandSwerveDrivetrain extends TunerSwerveDrivetrain implements Su
         // Trust MegaTag2 X/Y, never its yaw (huge theta std dev) -- the Pigeon owns heading.
         this.addVisionMeasurement(mt2.pose, mt2.timestampSeconds, VecBuilder.fill(0.7, 0.7, 9999999));
         visionTagCountPub.set(mt2.tagCount);
-    }
-
-    /** True while the chassis is slow enough (translation AND rotation) to trust an
-     *  in-match MT1 heading re-seed. Thresholds in Vision.VISION_SEED_*. */
-    private boolean isNearlyStationary() {
-        ChassisSpeeds speeds = this.getState().Speeds; // robot-relative; magnitude is frame-free
-        double speedMps = Math.hypot(speeds.vxMetersPerSecond, speeds.vyMetersPerSecond);
-        double yawRateDps = Math.abs(this.getPigeon2().getAngularVelocityZDevice().getValueAsDouble());
-        return speedMps < Vision.VISION_SEED_MAX_SPEED_MPS
-            && yawRateDps < Vision.VISION_SEED_MAX_YAW_RATE_DPS;
     }
 
     /** Rejects botpose solves that land outside the field -- a garbage solve can't seed. */

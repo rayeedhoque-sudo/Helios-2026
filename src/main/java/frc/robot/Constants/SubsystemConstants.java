@@ -21,23 +21,20 @@ public class SubsystemConstants {
 
             // AprilTag pose correction (CommandSwerveDrivetrain.updateVisionPose), enabled by
             // team request 2026-07-17: MegaTag2 corrects X/Y continuously (yaw stays
-            // Pigeon-owned) and MegaTag1 auto-seeds the heading/pose ("auto re-zero") behind
-            // the quality gates below. PREREQUISITE -- the Limelight's camera mount pose MUST
-            // be set in its web UI first: botpose is systematically wrong without it, and the
-            // gates below cannot catch a consistent mount-offset error. TODO verify on robot
-            // before first match; MENU re-zero is the manual recovery either way.
+            // Pigeon-owned) and MegaTag1 seeds the full pose ONLY until the first enable
+            // after boot. The in-match auto re-seed was REMOVED 2026-07-21 by team request:
+            // once the match starts, field centering happens ONLY via the driver's MENU
+            // press. PREREQUISITE -- the Limelight's camera mount pose MUST be set in its
+            // web UI first: botpose is systematically wrong without it, and the gates below
+            // cannot catch a consistent mount-offset error. TODO verify on robot before
+            // first match.
             public static final boolean ENABLE_MEGATAG2_POSE = true;
 
-            // Auto-seed quality gates. Disabled robot (pre-match, sitting still): adopt the
-            // full MT1 tag pose whenever it disagrees with odometry. Enabled (in-match):
-            // yaw-only re-seed, and only from a multi-tag solve while nearly stationary --
-            // a moving single-tag MT1 yaw is exactly the noise the Pigeon exists to reject.
+            // Boot-seed quality gates (robot sitting still pre-match, never yet enabled):
+            // adopt the full MT1 tag pose whenever it disagrees with odometry.
             public static final double VISION_SEED_MAX_TAG_DIST_METERS = 5.0;  // ignore solves with avg tag distance beyond this [assumed] TODO tune
-            public static final double VISION_SEED_POS_TOL_METERS = 0.25;      // disabled-mode reseed when position is off by more than this
+            public static final double VISION_SEED_POS_TOL_METERS = 0.25;      // reseed when position is off by more than this
             public static final double VISION_SEED_YAW_TOL_DEG = 3.0;          // reseed when heading is off by more than this
-            public static final int    VISION_SEED_ENABLED_MIN_TAGS = 2;       // in-match yaw reseed requires a multi-tag solve
-            public static final double VISION_SEED_MAX_SPEED_MPS = 0.3;        // in-match reseed only while nearly stationary
-            public static final double VISION_SEED_MAX_YAW_RATE_DPS = 10.0;    // and not rotating
 
             // PathPlanner pathfinding constraints (driveToPose). Conservative starts -- the old
             // zeros meant pathfinding could not move at all. TODO tune on robot.
