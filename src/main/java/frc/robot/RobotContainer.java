@@ -20,6 +20,7 @@ import edu.wpi.first.wpilibj2.command.button.CommandXboxController;
 import edu.wpi.first.wpilibj2.command.button.RobotModeTriggers;
 
 import frc.robot.Constants.TunerConstants;
+import frc.robot.Constants.SubsystemConstants.ShooterSubsystemConstants;
 import frc.robot.Constants.SubsystemConstants.Vision;
 import frc.robot.commands.CommandSwerveDrivetrain;
 import frc.robot.subsystems.misc.HopperSubsystem;
@@ -128,6 +129,7 @@ public class RobotContainer {
         SmartDashboard.putData("Auto Chooser", autoChooser);
 
         configureBindings();
+        configureTestBindings();
 
         // Read-only current/temp/voltage publisher for the driver companion app (app optional).
         new PowerTelemetry(drivetrain, shooterSS, intakeSS, hopperSS);
@@ -199,31 +201,31 @@ public class RobotContainer {
                 );
 
             // LB = enable/disable X-lock (toggle: press to lock wheels in an X, press to release).
-                joystick2.leftBumper().toggleOnTrue(drivetrain.applyRequest(() -> brake));
+                joystick2.leftBumper().and(RobotModeTriggers.teleop()).toggleOnTrue(drivetrain.applyRequest(() -> brake));
 
             // MENU = manual heading re-zero (re-added 2026-07-17 by team request): point the
             // SHOOTER SIDE away from the driver, press once. Since 2026-07-21 (team request)
             // the AprilTag auto-seed (CommandSwerveDrivetrain.updateVisionPose) stops at the
             // first enable after boot, so MENU is the ONLY way to re-center the field during
             // a match (collision skew, gyro drift, camera down -- all of it lands here).
-                joystick2.start().onTrue(drivetrain.runOnce(drivetrain::seedFieldCentric));
+                joystick2.start().and(RobotModeTriggers.teleop()).onTrue(drivetrain.runOnce(drivetrain::seedFieldCentric));
 
             // A / DPAD-UP (hold) = search-align: rotate slowly until a SCORING tag of OUR
             // alliance is seen, then face it (bearing re-sampled every loop). Two separate
             // command instances -- one instance on two triggers cross-cancels on release.
-                joystick2.a().whileTrue(drivetrain.searchAndAlignCommand(
+                joystick2.a().and(RobotModeTriggers.teleop()).whileTrue(drivetrain.searchAndAlignCommand(
                     shooterSS::seesScoringTag,
                     () -> drivetrain.getState().Pose.getRotation().getDegrees()
                           + shooterSS.getDegreesToAlignToTarget()));
-                joystick2.povUp().whileTrue(drivetrain.searchAndAlignCommand(
+                joystick2.povUp().and(RobotModeTriggers.teleop()).whileTrue(drivetrain.searchAndAlignCommand(
                     shooterSS::seesScoringTag,
                     () -> drivetrain.getState().Pose.getRotation().getDegrees()
                           + shooterSS.getDegreesToAlignToTarget()));
 
             // DPAD-LEFT/RIGHT = rotate exactly +90 (CCW) / -90 deg from the heading at press
             // (rotateBy defers, so the snapshot happens at schedule time, not at boot).
-                joystick2.povLeft().onTrue(drivetrain.rotateBy(90));
-                joystick2.povRight().onTrue(drivetrain.rotateBy(-90));
+                joystick2.povLeft().and(RobotModeTriggers.teleop()).onTrue(drivetrain.rotateBy(90));
+                joystick2.povRight().and(RobotModeTriggers.teleop()).onTrue(drivetrain.rotateBy(-90));
 
             drivetrain.registerTelemetry(logger::telemeterize);
 
@@ -238,23 +240,23 @@ public class RobotContainer {
             // (RT/RB/B) the group cancels WITHOUT onFalse firing -- without this the roller
             // state machine stays latched in periodic() with no command owning intakeSS.
             // Redundant on normal release (stowCommand stops rollers again), harmless.
-            joystick2.leftTrigger()
+            joystick2.leftTrigger().and(RobotModeTriggers.teleop())
                 .whileTrue(intakeSS.intakeCommand().andThen(hopperSS.intakeFeedCommand())
                     .finallyDo(intakeSS::stopRollers))
                 .onFalse(intakeSS.stowCommand());
             // Y (hold) = outtake: same choreography, rollers out.
-            joystick2.y()
+            joystick2.y().and(RobotModeTriggers.teleop())
                 .whileTrue(intakeSS.outtakeCommand().andThen(hopperSS.intakeFeedCommand())
                     .finallyDo(intakeSS::stopRollers))
                 .onFalse(intakeSS.stowCommand());
             // X = manual stow: stop rollers immediately, then retract slider until stall.
-            joystick2.x().onTrue(intakeSS.stowCommand());
+            joystick2.x().and(RobotModeTriggers.teleop()).onTrue(intakeSS.stowCommand());
             // B (hold) = MANUAL hopper run: belts + kicker, UNGATED (works with shooter idle).
-            joystick2.b().whileTrue(hopperSS.manualRunCommand());
+            joystick2.b().and(RobotModeTriggers.teleop()).whileTrue(hopperSS.manualRunCommand());
             // VIEW (hold) = UNJAM: reverse belts + kicker at low duty to back a stuck ball out.
             // (Direction-test diagnostics removed 2026-07-18 after the fix was confirmed: the
             // belts were fighting from opposite flashed inversion; both motors now same-sign.)
-            joystick2.back().whileTrue(hopperSS.unjamCommand());
+            joystick2.back().and(RobotModeTriggers.teleop()).whileTrue(hopperSS.unjamCommand());
 
         //SHOOTER (re-enabled by team directive 2026-07-16)
             // SHOT LOCKOUT (team request 2026-07-17): while RT or RB is held, ONLY the shooter +
@@ -273,7 +275,7 @@ public class RobotContainer {
             //   to exit; use A / DPAD to acquire a tag first). Release: flywheels coast, hood
             //   recesses once they slow (hood interlock), drive + intake unlock. Strafe is OFF
             //   during aim -- pre-position for distance first.
-            joystick2.rightTrigger()
+            joystick2.rightTrigger().and(RobotModeTriggers.teleop())
                 .whileTrue(shooterSS.visionShotCommand()
                     .alongWith(
                         // Intake stays disabled the WHOLE hold (never intake mid-shot).
@@ -303,12 +305,71 @@ public class RobotContainer {
             // RB (hold) = fixed feed shot: hood 25 deg (RB_FEED_ANGLE) + fixed tunable feed speed, belts always,
             // kicker gated on AT-SPEED (team request 2026-07-18). Same drive + intake lockout as
             // RT. Release: flywheels coast, hood recesses once they slow.
-            joystick2.rightBumper()
+            joystick2.rightBumper().and(RobotModeTriggers.teleop())
                 .whileTrue(shooterSS.feedAngleShotCommand()
                     .alongWith(
                         hopperSS.feedShooterCommand(() -> true, shooterSS::isFlywheelAtSpeed),
                         lockDriveAndIntake())
                     .withInterruptBehavior(Command.InterruptionBehavior.kCancelIncoming))
+                .onFalse(shooterSS.stopShooterCommand());
+    }
+
+    /**
+     * TEST MODE bindings (Driver Station Test mode ONLY -- 2026-07-21 team request). The
+     * SAME physical controller (joystick2, port 0) that carries the match bindings above
+     * (each gated .and(RobotModeTriggers.teleop())) also carries this per-mechanism test
+     * layer (each gated .and(RobotModeTriggers.test())). The two gates are mutually
+     * exclusive -- the DS is only ever in one mode at a time -- so a physical button safely
+     * means two different things depending on DS mode. Every bind below reuses an existing
+     * command factory and existing tuned constants; nothing here uses vision or auto-aim.
+     */
+    private void configureTestBindings() {
+        //INTAKE
+            // LT / RT (hold) = rollers in / out, isolated (no slider, no hopper).
+            joystick2.leftTrigger().and(RobotModeTriggers.test())
+                .whileTrue(intakeSS.rollerTestCommand(true));
+            joystick2.rightTrigger().and(RobotModeTriggers.test())
+                .whileTrue(intakeSS.rollerTestCommand(false));
+            // DPAD UP / DOWN (press) = slider/jackshaft extend / retract. CAN 22 (in code as
+            // intakeSliderMotor) IS the jackshaft -- team-confirmed 2026-07-21, there is no
+            // separate 3rd intake motor. Self-terminating (stall-cutoff/timeout): a press is
+            // enough, holding the button does nothing extra.
+            joystick2.povUp().and(RobotModeTriggers.test())
+                .onTrue(intakeSS.extendSliderCommand());
+            joystick2.povDown().and(RobotModeTriggers.test())
+                .onTrue(intakeSS.retractSliderCommand());
+
+        //HOPPER
+            // LB / RB (hold) = belt A / B ALONE -- the same per-motor isolation diagnostic
+            // that already caught a real fighting-inversion bug on this robot (2026-07-18).
+            joystick2.leftBumper().and(RobotModeTriggers.test())
+                .whileTrue(hopperSS.directionTest(true));
+            joystick2.rightBumper().and(RobotModeTriggers.test())
+                .whileTrue(hopperSS.directionTest(false));
+            // X (hold) = both belt motors together, no kicker.
+            joystick2.x().and(RobotModeTriggers.test())
+                .whileTrue(hopperSS.intakeFeedCommand());
+            // B (hold) = kicker alone.
+            joystick2.b().and(RobotModeTriggers.test())
+                .whileTrue(hopperSS.kickerTestCommand());
+
+        //SHOOTER (manual/fixed setpoints only -- no vision, no auto-aim)
+            // Y (hold) = manual test-fire: the SAME fixed hood angle + flywheel speed as the
+            // match RB binding, belts always, kicker gated on at-speed. Actually launches a
+            // ball (not just a flywheel spin), so it verifies the whole feed path end to end.
+            joystick2.y().and(RobotModeTriggers.test())
+                .whileTrue(shooterSS.feedAngleShotCommand()
+                    .alongWith(hopperSS.feedShooterCommand(() -> true, shooterSS::isFlywheelAtSpeed)))
+                .onFalse(shooterSS.stopShooterCommand());
+            // DPAD LEFT / RIGHT (press) = hood to MIN / MAX, flywheels off. Closed-loop and
+            // fully interlocked (same path setAngleAndVelocityCommand always drives through)
+            // -- the safe way to verify the two hood encoder anchors (handoff on-robot
+            // verify item 2), never a raw open-loop jog.
+            joystick2.povLeft().and(RobotModeTriggers.test())
+                .onTrue(shooterSS.setAngleAndVelocityCommand(ShooterSubsystemConstants.MIN_ANGLE, 0))
+                .onFalse(shooterSS.stopShooterCommand());
+            joystick2.povRight().and(RobotModeTriggers.test())
+                .onTrue(shooterSS.setAngleAndVelocityCommand(ShooterSubsystemConstants.MAX_ANGLE, 0))
                 .onFalse(shooterSS.stopShooterCommand());
     }
 
