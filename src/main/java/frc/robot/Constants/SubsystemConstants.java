@@ -5,6 +5,10 @@ import edu.wpi.first.math.util.Units;
 public class SubsystemConstants {
 
         public static class LightSensor{
+            // Indexer beam-breaks -- DECLARED, NOT YET WIRED IN CODE (data sheet sec.11):
+            // physical wiring + active-high/low polarity unconfirmed. Construct
+            // DigitalInput(8/9) only after the team verifies both on the robot; the old
+            // Sensors stub that faked "always detected" was deleted 2026-07-21.
             public static final int INDEXER_SENSOR_ID_A = 8;
             public static final int INDEXER_SENSOR_ID_B = 9;
         }

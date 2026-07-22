@@ -20,7 +20,6 @@ import edu.wpi.first.wpilibj2.command.Command;
 import edu.wpi.first.wpilibj2.command.Commands;
 import edu.wpi.first.wpilibj2.command.SubsystemBase;
 import frc.robot.Constants.SubsystemConstants.IntakeSubsystemConstants;
-import frc.robot.subsystems.utility.Sensors;
 
 public class IntakeSubsystem extends SubsystemBase {
 
@@ -51,9 +50,6 @@ public class IntakeSubsystem extends SubsystemBase {
         private GenericEntry sliderCurrentEntry;
         private GenericEntry sliderVelocityEntry;
     
-    // //Sensors
-        Sensors sensors = new Sensors();
-
     //Slider stall detection (measured signals, not commanded output).
         // Recreated at the START of every move: a Debouncer keeps its last state, so a shared
         // instance still reads "stalled" from the previous move and would end the next move

@@ -19,7 +19,6 @@ import edu.wpi.first.wpilibj.shuffleboard.ShuffleboardTab;
 import edu.wpi.first.wpilibj2.command.Command;
 import edu.wpi.first.wpilibj2.command.SubsystemBase;
 import frc.robot.Constants.SubsystemConstants.HopperSubsystemConstants;
-import frc.robot.subsystems.utility.Sensors;
 
 public class HopperSubsystem extends SubsystemBase{
 
@@ -32,12 +31,8 @@ public class HopperSubsystem extends SubsystemBase{
         // Kraken X60 the CAD showed. Victor SPX = Phoenix 5, brushed motors only.
         private final VictorSPX kickerMotor = new VictorSPX(HopperSubsystemConstants.KICKER_MOTOR_ID);
 
-    //Tracker Variables
-        private boolean fuelDetectedIndexer;
-
     //Data
         private ShuffleboardTab HopperSubsystemTab = Shuffleboard.getTab("Hopper Subsystem Tab");
-        private GenericEntry fuelDetectedIndexerEntry;
 
         // Live hopper-motor diagnostics (2026-07-18). Applied output = what the controller is
         // ACTUALLY commanding (~0.5 while B held if the command lands; 0 if the SparkMax is
@@ -54,9 +49,10 @@ public class HopperSubsystem extends SubsystemBase{
         private GenericEntry hopperABusVEntry;
         private GenericEntry hopperBBusVEntry;
 
-    //Sensors 
-        Sensors sensors = new Sensors();
-    
+    // (Beam-break "fuel detected" display DELETED 2026-07-21: Sensors was a stub hardcoding
+    // true, so the dashboard lied. DIO 8/9 assignments live in the data sheet + LightSensor
+    // constants; construct real DigitalInputs only after the team confirms wiring/polarity.)
+
     public HopperSubsystem(){
         // Conservative-start current limits + neutral mode (Hardware-Data-Sheet sec.7). TODO tune on robot.
             // Hopper A/B: NEO 2.0 - 20A smart limit, Coast.
@@ -119,11 +115,7 @@ public class HopperSubsystem extends SubsystemBase{
             kickerMotor.setNeutralMode(NeutralMode.Coast);
             kickerMotor.configOpenloopRamp(0.25); // seconds from 0 to full output
 
-        //Tracker Variables
-            fuelDetectedIndexer = false;
-
         //Data
-            fuelDetectedIndexerEntry = HopperSubsystemTab.add("Fuel Detected Indexer", false).getEntry();
             hopperAOutputEntry = HopperSubsystemTab.add("Hopper A Applied Output", 0.0).getEntry();
             hopperBOutputEntry = HopperSubsystemTab.add("Hopper B Applied Output", 0.0).getEntry();
             hopperACurrentEntry = HopperSubsystemTab.add("Hopper A Current (A)", 0.0).getEntry();
@@ -251,9 +243,6 @@ public class HopperSubsystem extends SubsystemBase{
     public void periodic(){
         // Telemetry only -- motor control lives entirely in the command factories now
         // (2026-07-16 team-spec rewrite deleted the HOPPERSTATE machine).
-            fuelDetectedIndexer = sensors.getIndexSensorA() && sensors.getIndexSensorB();
-            fuelDetectedIndexerEntry.setBoolean(fuelDetectedIndexer);
-
             // Hopper motor diagnostics -- getAppliedOutput()/getOutputCurrent() are the same
             // read-only signals PowerTelemetry already uses (no control side effect).
             hopperAOutputEntry.setDouble(hopperMotorA.getAppliedOutput());
