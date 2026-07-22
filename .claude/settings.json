@@ -1,0 +1,29 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "shell": "bash",
+            "command": "[ -n \"$(git -C 'C:/FRC/Helios-2026' status --porcelain 2>/dev/null)\" ] && echo '{\"systemMessage\":\"WARNING: Helios-2026 has uncommitted changes left from a previous session (Commit Policy).\",\"hookSpecificOutput\":{\"hookEventName\":\"SessionStart\",\"additionalContext\":\"WARNING: C:/FRC/Helios-2026 has uncommitted git changes left over from a previous session. Per the CLAUDE.md Commit Policy, run git status and git diff, review what the changes are, and commit them (building first if they touch code) BEFORE starting any new work.\"}}' || true",
+            "timeout": 15,
+            "statusMessage": "Checking Helios-2026 for uncommitted changes"
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "shell": "bash",
+            "command": "[ -n \"$(git -C 'C:/FRC/Helios-2026' status --porcelain 2>/dev/null)\" ] && echo '{\"systemMessage\":\"WARNING: session ended with UNCOMMITTED changes in Helios-2026 - commit them next session (CLAUDE.md Commit Policy).\"}' || true",
+            "timeout": 15
+          }
+        ]
+      }
+    ]
+  }
+}
