@@ -97,14 +97,19 @@ public class TunerConstants {
                 // Steady-state azimuth torque is small, but fast whole-module swings need a burst.
                 // The conservative-start 40/20 caps starved the steer motors during quick rotation /
                 // direction reversals (modules visibly locked mid-swing, on-robot test 2026-07-08).
-                // Stator stays at 60 (the low-speed torque that cured the lockup is stator-driven,
-                // and matches the Tuner X project's 60 A value). Supply backed off 40 -> 30 A
+                // Stator 60 -> 40 A (2026-08-21, team-directed). NOTE: this walks back the fix
+                // above -- 40 A stator is the conservative-start value whose low-speed torque
+                // shortfall caused the 07-08 lockup, and it no longer matches the Tuner X
+                // project's 60 A. Stator is NOT what the battery sees, so this buys no brownout
+                // margin; the supply limit below is the pack-draw cap. ON-ROBOT WATCH ITEM: if
+                // modules lock/hesitate mid-swing, revert this to 60 FIRST (before touching
+                // supply) -- that is the known-good value. Supply backed off 40 -> 30 A
                 // (2026-07-18, brownout budget): 40 was the hardware-sheet sec.7 CAP, and 40 x4 =
                 // 160 A of steer draw lands at the exact moment the drives are in their burst
                 // window (the same stick whip triggers both). 30 x4 = 120 A ceiling.
                 // ON-ROBOT WATCH ITEM: if modules visibly lock/hesitate mid-swing again, this
                 // supply cut is the suspect -- step 30 -> 35 -> 40 until it clears.
-                .withStatorCurrentLimit(Amps.of(60))
+                .withStatorCurrentLimit(Amps.of(40))
                 .withStatorCurrentLimitEnable(true)
                 .withSupplyCurrentLimit(Amps.of(30))
                 .withSupplyCurrentLimitEnable(true)
