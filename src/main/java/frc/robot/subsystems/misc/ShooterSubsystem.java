@@ -151,19 +151,26 @@ public class ShooterSubsystem extends SubsystemBase{
 
                 // Current limits + neutral mode (Hardware-Data-Sheet sec.7). TODO tune on robot.
                 // Flywheels: Kraken X60 - stator 80A / supply 25A, Coast (let them spin down freely).
-                // STATOR raised 40 -> 80 A (Regular tier) 2026-07-17: the feed/precision shots "barely
-                // left the robot" -- the 40 A cap choked the torque IMPULSE when a ball hits, so the
-                // wheel sagged deep on contact instead of driving the ball. 80 A doubles the anti-bog
-                // torque; that spike is brief (ball contact ~tens of ms) and sourced mostly from the
-                // flywheel's inertia + DC link, NOT sustained battery draw. Kraken X60 stalls at 366 A
-                // so 80 A intermittent is well within thermal margin (watch DeviceTemp in PowerTelemetry).
+                // STATOR was raised 40 -> 80 A (Regular tier) 2026-07-17: the feed/precision shots
+                // "barely left the robot" -- the 40 A cap choked the torque IMPULSE when a ball hits,
+                // so the wheel sagged deep on contact instead of driving the ball. 80 A doubled the
+                // anti-bog torque; that spike is brief (ball contact ~tens of ms) and sourced mostly
+                // from the flywheel's inertia + DC link, NOT sustained battery draw.
+                // STATOR 80 -> 50 A (2026-08-21, team-directed). NOTE: this walks the 07-17 fix most
+                // of the way back toward the 40 A that produced weak shots, so the "barely left the
+                // robot" symptom is the expected failure mode -- if it returns, restore 80 FIRST.
+                // It buys nothing on either axis it might look like it should: supply (unchanged at
+                // 25 A) is the brownout knob, and a Kraken X60 stalls at 366 A so 80 A intermittent
+                // was never a thermal problem (watch DeviceTemp in PowerTelemetry).
+                // UNVERIFIED ON ROBOT: the hood encoder reads 0 (dead) as of this change, so no
+                // representative shot could be taken -- retest shots once the hood is restored.
                 // SUPPLY deliberately HELD at 25 A: supply is the battery-draw / BROWNOUT knob and the
                 // team browns out late-match -- keeping it at 25 A means this change adds ~0 to the
                 // spin-up draw (still 25 A x4 = 100 A). If rapid-fire recovery between balls is still
                 // weak on retest, raise supply toward 30 A (Regular tier) -- but only on a healthy
                 // battery, and expect ~+20 A worst-case drivetrain-shot overlap. Cap is 120/40, never exceed.
                 CurrentLimitsConfigs flywheelLimits = new CurrentLimitsConfigs();
-                flywheelLimits.StatorCurrentLimit = 80;
+                flywheelLimits.StatorCurrentLimit = 50;
                 flywheelLimits.StatorCurrentLimitEnable = true;
                 flywheelLimits.SupplyCurrentLimit = 25;
                 flywheelLimits.SupplyCurrentLimitEnable = true;
