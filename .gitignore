@@ -186,8 +186,8 @@ compile_commands.json
 # Eclipse generated file for annotation processors
 .factorypath
 
-# Driver companion app lives outside the robot repo
-driver-companion/
+# Driver companion app: absorbed into the C:/FRC workspace repo, so tracked here.
+# (Its own build output is excluded by driver-companion/.gitignore.)
 
 # Local agent permissions (machine-specific; .claude/skills/ IS tracked)
 .claude/settings.local.json

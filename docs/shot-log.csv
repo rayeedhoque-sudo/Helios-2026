@@ -1,0 +1,4 @@
+when,dist_m,dist_in,scored,rt_rpm,flywheel_rpm,hood_units_above_base,hood_base,hood_current,hood_raw_enc,ll_tv,ll_tag_id,ll_tx_deg,ll_ty_deg,ll_ta,ll_cam_x_m,ll_cam_z_m,ll_tag_dist_m,ll_tag_dist_sd_m,ll_samples,ll_hub_dist_m,notes
+2026-08-29 (revised),0.9957,39.2,yes,1010,0,137,193.8,369.3,9.149,1,17,1.633,-40.27,0.8982,0.06214,1.203,1.205,0.0008825,40,1.808,values replaced by team 2026-08-29; AprilTag/Limelight geometry retained from the original capture
+2026-08-29 (revised),1.797,70.75,yes,1010,0,137,75.15,187.5,187.5,1,17,3.337,-24.74,0.3615,0.146,1.94,1.946,0.0007115,40,2.548,values replaced by team 2026-08-29; AprilTag/Limelight geometry retained from the original capture
+2026-08-29 (revised),2.286,90,yes,1010,0,170.8,198.4,391.2,31.23,1,17,-0.553,-19.99,0.2332,0.02022,2.461,2.461,0.02037,40,3.065,values replaced by team 2026-08-29; AprilTag/Limelight geometry retained from the original capture

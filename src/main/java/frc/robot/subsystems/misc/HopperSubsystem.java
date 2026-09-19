@@ -78,7 +78,7 @@ public class HopperSubsystem extends SubsystemBase{
             // the motor -> check CAN 20/21 wiring + power; output ~0.5 / current high = fighting or
             // jammed).
             SparkMaxConfig hopperConfig = new SparkMaxConfig();
-            hopperConfig.smartCurrentLimit(20);
+            hopperConfig.smartCurrentLimit(HopperSubsystemConstants.HOPPER_CURRENT_LIMIT_A);
             hopperConfig.idleMode(IdleMode.kCoast);
             // 0.25 s open-loop ramp, same inrush softening every sibling motor already has
             // (kicker, intake roller/slider) -- the belts were the one unramped pair
@@ -125,6 +125,33 @@ public class HopperSubsystem extends SubsystemBase{
     }
 
     /**
+     * KILL SWITCH for the whole hopper (added 2026-08-29). false = NO hopper motor is ever
+     * driven: belts and kicker are commanded 0 no matter which command is running, in teleop,
+     * in test mode and in autonomous alike. The bindings all still exist and the commands all
+     * still schedule -- they simply move nothing -- so this is one word either way and cannot
+     * leave a mechanism half-wired.
+     *
+     * CURRENTLY TRUE: the hopper runs normally (disabled briefly on 2026-08-29, re-enabled the
+     * same day by team request).
+     *
+     * What false costs, so it is not a surprise on the field: nothing feeds the shooter. Every
+     * shot binding still spins its flywheels and opens its kicker gate, and no fuel arrives.
+     * The intake still collects, but nothing indexes it. Unjam does nothing either.
+     */
+    private static final boolean HOPPER_ENABLED = true;
+
+    /** Drive both belt motors, or 0 when the hopper is disabled. Every belt write goes here. */
+    private void setBelts(double duty){
+        hopperMotorA.set(HOPPER_ENABLED ? duty : 0);
+        hopperMotorB.set(HOPPER_ENABLED ? duty : 0);
+    }
+
+    /** Drive the kicker, or 0 when the hopper is disabled. Every kicker write goes here. */
+    private void setKicker(double duty){
+        kickerMotor.set(ControlMode.PercentOutput, HOPPER_ENABLED ? duty : 0);
+    }
+
+    /**
      * UNJAM: reverse both belts AND the kicker while held, to back a jammed ball out.
      * (Commands own the motors outright now -- the old periodic state machine and its
      * manualOverride flag are gone, 2026-07-16 team-spec rewrite.)
@@ -132,9 +159,8 @@ public class HopperSubsystem extends SubsystemBase{
     public Command unjamCommand(){
         return runEnd(
             () -> {
-                hopperMotorA.set(-HopperSubsystemConstants.UNJAM_SPEED);
-                hopperMotorB.set(-HopperSubsystemConstants.UNJAM_SPEED);
-                kickerMotor.set(ControlMode.PercentOutput, -HopperSubsystemConstants.UNJAM_SPEED);
+                setBelts(-HopperSubsystemConstants.UNJAM_SPEED);
+                setKicker(-HopperSubsystemConstants.UNJAM_SPEED);
             },
             () -> {
                 stopIndex();
@@ -149,7 +175,7 @@ public class HopperSubsystem extends SubsystemBase{
      */
     public Command kickerTestCommand(){
         return runEnd(
-            () -> kickerMotor.set(ControlMode.PercentOutput, HopperSubsystemConstants.KICKER_TEST_SPEED),
+            () -> setKicker(HopperSubsystemConstants.KICKER_TEST_SPEED),
             () -> stopKickFuel());
     }
 
@@ -165,25 +191,27 @@ public class HopperSubsystem extends SubsystemBase{
     public Command directionTest(boolean motorA){
         SparkMax motor = motorA ? hopperMotorA : hopperMotorB;
         return runEnd(
-            () -> motor.set(HopperSubsystemConstants.DIRECTION_TEST_SPEED),
+            () -> motor.set(HOPPER_ENABLED ? HopperSubsystemConstants.DIRECTION_TEST_SPEED : 0),
             () -> stopIndex());
     }
 
     /**
-     * MANUAL RUN (B button, hold): belts + kicker together, UNGATED -- the kicker does
-     * not wait for flywheels-at-speed, so this works even with the shooter idle.
-     * Release = stop everything.
+     * MANUAL RUN (B button, hold): belts ONLY -- the kicker stays OFF (team spec
+     * 2026-08-22: the kicker runs only on a shot, once the flywheels are at speed).
+     * This also removes the stopped-flywheel CIM-stall exposure the old ungated
+     * kicker carried. Release = stop the belts (and re-assert the kicker stopped).
      */
     public Command manualRunCommand(){
         return runEnd(
-            () -> {
-                indexFuel();
-                kickFuel();
-            },
+            () -> indexFuel(),
             () -> {
                 stopIndex();
                 stopKickFuel();
-            });
+                setBeltCurrentLimit(HopperSubsystemConstants.HOPPER_CURRENT_LIMIT_A);
+            })
+            // Belts get 30 A while B is held (team request 2026-08-27), restored in end()
+            // above -- same raise/restore pattern the shot feed already uses.
+            .beforeStarting(() -> setBeltCurrentLimit(HopperSubsystemConstants.HOPPER_MANUAL_CURRENT_LIMIT_A));
     }
 
     /**
@@ -192,17 +220,46 @@ public class HopperSubsystem extends SubsystemBase{
      * INDEXER_SPEED only while kickerOn (flywheels at speed AND hood at angle, via
      * ShooterSubsystem.isReadyToShoot()). A gate going false stops that motor the same
      * loop, so fuel is never kicked into flywheels that aren't ready. End = stop both.
+     *
+     * reverseKicker (team request 2026-08-24) wins over kickerOn: while it is true the
+     * kicker runs BACKWARD, to hold fuel off the winding-up flywheels. Deliberately at
+     * UNJAM_SPEED, not INDEXER_SPEED -- the belts are still feeding FORWARD underneath it,
+     * so this duty is fighting them, and the Victor SPX has no current sensing (CIM stall
+     * ~131 A) so duty is the only software limit there is. The belts cannot win that fight
+     * at the 5 A smart limit, so the crush risk is self-limiting; the unverified part is
+     * the DIRECTION FLIP at the end of the window -- the kicker goes -0.3 -> +0.75 while
+     * still spinning backward under load, a plugging reversal on a CIM with no current
+     * sensing and an unknown breaker. configOpenloopRamp(0.25) slews it over ~0.26 s,
+     * which is why this is not gated. TODO on robot: watch the breaker at the t=2 s flip.
      */
-    public Command feedShooterCommand(BooleanSupplier beltsOn, BooleanSupplier kickerOn){
+    public Command feedShooterCommand(BooleanSupplier beltsOn, BooleanSupplier kickerOn, BooleanSupplier reverseKicker){
         return runEnd(
             () -> {
-                if (beltsOn.getAsBoolean()) { indexFuel(); } else { stopIndex(); }
-                if (kickerOn.getAsBoolean()) { kickFuel(); } else { stopKickFuel(); }
+                if (beltsOn.getAsBoolean()) { indexFuelForShot(); } else { stopIndex(); }
+                if (reverseKicker.getAsBoolean()) { reverseKickFuel(); }
+                else if (kickerOn.getAsBoolean()) { kickFuelForShot(); }
+                else { stopKickFuel(); }
             },
             () -> {
                 stopIndex();
                 stopKickFuel();
-            });
+                setBeltCurrentLimit(HopperSubsystemConstants.HOPPER_CURRENT_LIMIT_A);
+            })
+            // Raise the belt limit 20% for the shot only (team request 2026-08-22), restored
+            // in end() above -- runs once per press, not every loop.
+            .beforeStarting(() -> setBeltCurrentLimit(HopperSubsystemConstants.HOPPER_SHOT_CURRENT_LIMIT_A));
+    }
+
+    /**
+     * Re-apply just the smart current limit to both belt motors, leaving every other
+     * configured field (idle mode, ramp, inversion, follower-disable) untouched:
+     * kNoResetSafeParameters + kNoPersistParameters = a live tweak, nothing flashed.
+     */
+    private void setBeltCurrentLimit(int amps){
+        SparkMaxConfig cfg = new SparkMaxConfig();
+        cfg.smartCurrentLimit(amps);
+        hopperMotorA.configure(cfg, ResetMode.kNoResetSafeParameters, PersistMode.kNoPersistParameters);
+        hopperMotorB.configure(cfg, ResetMode.kNoResetSafeParameters, PersistMode.kNoPersistParameters);
     }
 
     /**
@@ -222,21 +279,47 @@ public class HopperSubsystem extends SubsystemBase{
     }
 
     public void indexFuel(){
-        hopperMotorA.set(HopperSubsystemConstants.HOPPER_SPEED);
-        hopperMotorB.set(HopperSubsystemConstants.HOPPER_SPEED);
+        setBelts(HopperSubsystemConstants.HOPPER_SPEED);
+    }
+
+    /**
+     * Belts at the SHOT duty (HOPPER_SHOT_SPEED) rather than the normal one -- used by
+     * feedShooterCommand only, so B / RT / RB feed faster while the LT intake feed and the
+     * A manual run are untouched (team request 2026-08-29).
+     */
+    public void indexFuelForShot(){
+        setBelts(HopperSubsystemConstants.HOPPER_SHOT_SPEED);
     }
 
     public void kickFuel(){
-        kickerMotor.set(ControlMode.PercentOutput, HopperSubsystemConstants.INDEXER_SPEED);
+        setKicker(HopperSubsystemConstants.INDEXER_SPEED);
+    }
+
+    /**
+     * Kicker at the SHOT duty (KICKER_SHOT_SPEED) -- used by feedShooterCommand only, so
+     * B / RT / RB kick faster while the unjam and the kicker bench test keep their own duties
+     * (team request 2026-08-29). The REVERSE stays at UNJAM_SPEED, deliberately: see
+     * KICKER_SHOT_SPEED for why a faster reverse is the one change not worth making.
+     */
+    public void kickFuelForShot(){
+        setKicker(HopperSubsystemConstants.KICKER_SHOT_SPEED);
     }
     
+    /**
+     * Kicker backward at the proven unjam duty. NO LIVE CALLER since 2026-08-28 (team request:
+     * no hopper reversing during the shot) -- kept because feedShooterCommand still takes the
+     * reverseKicker supplier, so restoring the hold-back is a one-word change at the binding.
+     */
+    public void reverseKickFuel(){
+        setKicker(-HopperSubsystemConstants.UNJAM_SPEED);
+    }
+
     public void stopIndex(){
-        hopperMotorA.set(0);
-        hopperMotorB.set(0);
+        setBelts(0);
     }
 
     public void stopKickFuel(){
-        kickerMotor.set(ControlMode.PercentOutput, 0);
+        setKicker(0);
     }
 
     @Override

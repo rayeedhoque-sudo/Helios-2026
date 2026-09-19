@@ -81,14 +81,35 @@ public class TunerConstants {
         // The stator/traction limit comes from kSlipCurrent, which the swerve factory copies
         // into StatorCurrentLimit. If accel feels soft WITH a fresh battery, raise toward 45;
         // hardware sheet cap is 70 supply -- do not exceed.
+        // CUT 30% ON 2026-08-22 (team request: lower drive current usage by 30%): burst
+        // 40 -> 28 A, sustained 30 -> 21 A. New budget: 28 x4 = 112 A burst folding to
+        // 21 x4 = 84 A sustained, so with steer's unchanged 120 A ceiling the drivetrain
+        // worst case falls from ~280 A to ~232 A -- well clear of the ~290 A that sags a
+        // healthy pack to the RIO2 brownout floor.
+        // CUT 30% AGAIN ON 2026-08-29 (same request, second pass): burst 28 -> 20 A,
+        // sustained 21 -> 15 A. Budget now 20 x4 = 80 A burst folding to 15 x4 = 60 A
+        // sustained; with steer also cut to 21 x4 = 84 A the drivetrain worst case is ~164 A,
+        // down from the original ~280 A. Brownout margin is no longer the constraint here.
+        // WHAT THIS COSTS, and it is not small: supply current IS torque. Two 30% cuts
+        // compound to 50% of the original 40 A burst, so acceleration off the line, pushing
+        // through defense, and climbing over obstacles are all roughly HALF of what the
+        // drivetrain did in July. If the robot now feels unable to push or accelerate, this
+        // is the line -- step 20 -> 24 -> 28 back up. Top speed is barely affected either
+        // way (cruising draws little); that knob is MaxSpeed in RobotContainer.
+        // TRADEOFF, expect it: less supply current is less torque. Acceleration will be
+        // softer, pushing matches weaker, and climbing a defended lane harder. That is
+        // inherent to the request, not a bug. Speed was NOT changed -- a speed cap barely
+        // affects current, because the draw comes from accelerating and pushing, not from
+        // cruising. If the robot needs to be SLOWER as well, that is MaxSpeed in
+        // RobotContainer (currently 0.8 of kSpeedAt12Volts).
         .withCurrentLimits(new CurrentLimitsConfigs()
-            .withSupplyCurrentLimit(Amps.of(40))
+            .withSupplyCurrentLimit(Amps.of(20))
             // Burst-then-fall-back: 40 A is allowed for accelerations, but sustained draw
             // (pushing matches, stalls) drops to 30 A after 0.25 s. Window shortened 0.5 ->
             // 0.25 s (2026-07-18): teleop is a stream of fresh transients that each re-arm
             // the window, so a 0.5 s window meant the drives lived at full burst and the
             // fold-back never engaged during a full-stick reversal (which also lasted 0.5 s).
-            .withSupplyCurrentLowerLimit(Amps.of(30))
+            .withSupplyCurrentLowerLimit(Amps.of(15))
             .withSupplyCurrentLowerTime(Seconds.of(0.25))
             .withSupplyCurrentLimitEnable(true));
     private static final TalonFXConfiguration steerInitialConfigs = new TalonFXConfiguration()
@@ -108,10 +129,18 @@ public class TunerConstants {
                 // 160 A of steer draw lands at the exact moment the drives are in their burst
                 // window (the same stick whip triggers both). 30 x4 = 120 A ceiling.
                 // ON-ROBOT WATCH ITEM: if modules visibly lock/hesitate mid-swing again, this
-                // supply cut is the suspect -- step 30 -> 35 -> 40 until it clears.
+                // supply cut is the suspect -- step 21 -> 25 -> 30 -> 40 until it clears.
+                // SUPPLY CUT 30% on 2026-08-29 (team request, alongside the drive cut):
+                // 30 -> 21 A, so the steer ceiling falls from 30 x4 = 120 A to 21 x4 = 84 A.
+                // THE STATOR LIMIT IS DELIBERATELY LEFT AT 40 A, and that is not an oversight:
+                // stator current is not what the battery sees, so cutting it buys zero brownout
+                // margin and costs only azimuth torque -- and 40 A is ALREADY the value whose
+                // low-speed torque shortfall locked modules mid-swing on 2026-07-08. Taking it
+                // to 28 would walk straight back into a known failure for no draw benefit.
+                // Team-confirmed 2026-08-29 (supply-only cut chosen over cutting both).
                 .withStatorCurrentLimit(Amps.of(40))
                 .withStatorCurrentLimitEnable(true)
-                .withSupplyCurrentLimit(Amps.of(30))
+                .withSupplyCurrentLimit(Amps.of(21))
                 .withSupplyCurrentLimitEnable(true)
         )
         // Brake so the wheels hold their commanded steer angle instead of coasting.
