@@ -2,9 +2,6 @@ package frc.robot.subsystems.misc;
 
 import java.util.function.BooleanSupplier;
 
-import com.ctre.phoenix.motorcontrol.ControlMode;
-import com.ctre.phoenix.motorcontrol.NeutralMode;
-import com.ctre.phoenix.motorcontrol.can.VictorSPX;
 import com.revrobotics.REVLibError;
 import com.revrobotics.ResetMode;
 import com.revrobotics.PersistMode;
@@ -14,6 +11,7 @@ import com.revrobotics.spark.config.SparkMaxConfig;
 
 import edu.wpi.first.networktables.GenericEntry;
 import edu.wpi.first.wpilibj.DriverStation;
+import edu.wpi.first.wpilibj.Timer;
 import edu.wpi.first.wpilibj.shuffleboard.Shuffleboard;
 import edu.wpi.first.wpilibj.shuffleboard.ShuffleboardTab;
 import edu.wpi.first.wpilibj2.command.Command;
@@ -26,10 +24,8 @@ public class HopperSubsystem extends SubsystemBase{
         private final SparkMax hopperMotorA = new SparkMax( HopperSubsystemConstants.HOPPER_ID_A, com.revrobotics.spark.SparkLowLevel.MotorType.kBrushless);
         private final SparkMax hopperMotorB = new SparkMax( HopperSubsystemConstants.HOPPER_ID_B, com.revrobotics.spark.SparkLowLevel.MotorType.kBrushless);
     
-    //Index Motor
-        // CAN 17 is a VICTOR SPX (team CAN chart 2026-07-08, staying this season), NOT the
-        // Kraken X60 the CAD showed. Victor SPX = Phoenix 5, brushed motors only.
-        private final VictorSPX kickerMotor = new VictorSPX(HopperSubsystemConstants.KICKER_MOTOR_ID);
+    // (Kicker REMOVED 2026-09-30: the V1 Victor SPX + CIM at CAN 17 is gone in the V2 redesign.
+    // Its job is now the launcher's feeder X60 -- see LauncherSubsystem.)
 
     //Data
         private ShuffleboardTab HopperSubsystemTab = Shuffleboard.getTab("Hopper Subsystem Tab");
@@ -107,14 +103,6 @@ public class HopperSubsystem extends SubsystemBase{
             if (hopperBCfg != REVLibError.kOk) {
                 DriverStation.reportError("Hopper B (CAN 21) configure FAILED: " + hopperBCfg + " -- check CAN/power to the controller", false);
             }
-            // Kicker: Victor SPX driving a CIM (motor swapped 2026-07-16). WARNING - the
-            // Victor SPX has NO current sensing, so a current limit is impossible in
-            // software; the breaker is the only stall protection (CIM stall ~131 A). Ramp
-            // softens inrush. TODO: confirm the kicker breaker size.
-            kickerMotor.configFactoryDefault();
-            kickerMotor.setNeutralMode(NeutralMode.Coast);
-            kickerMotor.configOpenloopRamp(0.25); // seconds from 0 to full output
-
         //Data
             hopperAOutputEntry = HopperSubsystemTab.add("Hopper A Applied Output", 0.0).getEntry();
             hopperBOutputEntry = HopperSubsystemTab.add("Hopper B Applied Output", 0.0).getEntry();
@@ -126,7 +114,7 @@ public class HopperSubsystem extends SubsystemBase{
 
     /**
      * KILL SWITCH for the whole hopper (added 2026-08-29). false = NO hopper motor is ever
-     * driven: belts and kicker are commanded 0 no matter which command is running, in teleop,
+     * driven: the belts are commanded 0 no matter which command is running, in teleop,
      * in test mode and in autonomous alike. The bindings all still exist and the commands all
      * still schedule -- they simply move nothing -- so this is one word either way and cannot
      * leave a mechanism half-wired.
@@ -135,7 +123,7 @@ public class HopperSubsystem extends SubsystemBase{
      * same day by team request).
      *
      * What false costs, so it is not a surprise on the field: nothing feeds the shooter. Every
-     * shot binding still spins its flywheels and opens its kicker gate, and no fuel arrives.
+     * shot binding still spins the launcher, and no fuel arrives.
      * The intake still collects, but nothing indexes it. Unjam does nothing either.
      */
     private static final boolean HOPPER_ENABLED = true;
@@ -146,37 +134,14 @@ public class HopperSubsystem extends SubsystemBase{
         hopperMotorB.set(HOPPER_ENABLED ? duty : 0);
     }
 
-    /** Drive the kicker, or 0 when the hopper is disabled. Every kicker write goes here. */
-    private void setKicker(double duty){
-        kickerMotor.set(ControlMode.PercentOutput, HOPPER_ENABLED ? duty : 0);
-    }
-
     /**
-     * UNJAM: reverse both belts AND the kicker while held, to back a jammed ball out.
-     * (Commands own the motors outright now -- the old periodic state machine and its
-     * manualOverride flag are gone, 2026-07-16 team-spec rewrite.)
+     * UNJAM: reverse both belts while held, to back a jammed ball out. (The VIEW binding
+     * pairs this with LauncherSubsystem.feederUnjamCommand + the intake slider cycle.)
      */
     public Command unjamCommand(){
         return runEnd(
-            () -> {
-                setBelts(-HopperSubsystemConstants.UNJAM_SPEED);
-                setKicker(-HopperSubsystemConstants.UNJAM_SPEED);
-            },
-            () -> {
-                stopIndex();
-                stopKickFuel();
-            });
-    }
-
-    /**
-     * KICKER TEST: run the kicker alone at a slow duty, bypassing the at-speed gate.
-     * Verified the swapped CIM/Victor works (2026-07-16). UNBOUND utility -- bind it
-     * anywhere if the kicker needs isolating again.
-     */
-    public Command kickerTestCommand(){
-        return runEnd(
-            () -> setKicker(HopperSubsystemConstants.KICKER_TEST_SPEED),
-            () -> stopKickFuel());
+            () -> setBelts(-HopperSubsystemConstants.UNJAM_SPEED),
+            () -> stopIndex());
     }
 
     /**
@@ -196,17 +161,14 @@ public class HopperSubsystem extends SubsystemBase{
     }
 
     /**
-     * MANUAL RUN (B button, hold): belts ONLY -- the kicker stays OFF (team spec
-     * 2026-08-22: the kicker runs only on a shot, once the flywheels are at speed).
-     * This also removes the stopped-flywheel CIM-stall exposure the old ungated
-     * kicker carried. Release = stop the belts (and re-assert the kicker stopped).
+     * MANUAL RUN (A button, hold): belts ONLY -- the launcher feeder stays off.
+     * Release = stop the belts.
      */
     public Command manualRunCommand(){
         return runEnd(
             () -> indexFuel(),
             () -> {
                 stopIndex();
-                stopKickFuel();
                 setBeltCurrentLimit(HopperSubsystemConstants.HOPPER_CURRENT_LIMIT_A);
             })
             // Belts get 30 A while B is held (team request 2026-08-27), restored in end()
@@ -214,40 +176,36 @@ public class HopperSubsystem extends SubsystemBase{
             .beforeStarting(() -> setBeltCurrentLimit(HopperSubsystemConstants.HOPPER_MANUAL_CURRENT_LIMIT_A));
     }
 
+    // Shot start reverse (team request 2026-10-05): restarted on every RT press.
+    private final Timer shotReverseTimer = new Timer();
+
     /**
-     * SHOT FEED (RT/RB, hold): belts and kicker follow their own live gates EVERY loop --
-     * belts run at HOPPER_SPEED while beltsOn (a valid shot is active), kicker runs at
-     * INDEXER_SPEED only while kickerOn (flywheels at speed AND hood at angle, via
-     * ShooterSubsystem.isReadyToShoot()). A gate going false stops that motor the same
-     * loop, so fuel is never kicked into flywheels that aren't ready. End = stop both.
-     *
-     * reverseKicker (team request 2026-08-24) wins over kickerOn: while it is true the
-     * kicker runs BACKWARD, to hold fuel off the winding-up flywheels. Deliberately at
-     * UNJAM_SPEED, not INDEXER_SPEED -- the belts are still feeding FORWARD underneath it,
-     * so this duty is fighting them, and the Victor SPX has no current sensing (CIM stall
-     * ~131 A) so duty is the only software limit there is. The belts cannot win that fight
-     * at the 5 A smart limit, so the crush risk is self-limiting; the unverified part is
-     * the DIRECTION FLIP at the end of the window -- the kicker goes -0.3 -> +0.75 while
-     * still spinning backward under load, a plugging reversal on a CIM with no current
-     * sensing and an unknown breaker. configOpenloopRamp(0.25) slews it over ~0.26 s,
-     * which is why this is not gated. TODO on robot: watch the breaker at the t=2 s flip.
+     * SHOT FEED (RT, hold): belts run at HOPPER_SHOT_SPEED only while beltsOn -- the launcher's
+     * flywheels AND feeder at speed (team spec 2026-09-30) -- re-checked every loop, so a dip
+     * from a ball passing through pauses the belts until both recover. End = stop.
+     * NOTE (V2): the hopper motors/gearbox are unchanged but the belt-floor hopper may run
+     * faster or slower at these duties than the V1 rollers did -- re-check throughput.
      */
-    public Command feedShooterCommand(BooleanSupplier beltsOn, BooleanSupplier kickerOn, BooleanSupplier reverseKicker){
+    public Command feedShooterCommand(BooleanSupplier beltsOn){
         return runEnd(
             () -> {
-                if (beltsOn.getAsBoolean()) { indexFuelForShot(); } else { stopIndex(); }
-                if (reverseKicker.getAsBoolean()) { reverseKickFuel(); }
-                else if (kickerOn.getAsBoolean()) { kickFuelForShot(); }
-                else { stopKickFuel(); }
+                // First HOPPER_SHOT_REVERSE_SEC of every shot: belts BACKWARD at the unjam duty,
+                // pulling fuel away from the feeder while the wheels spin up. Then the normal
+                // at-speed-gated feed.
+                if (!shotReverseTimer.hasElapsed(HopperSubsystemConstants.HOPPER_SHOT_REVERSE_SEC)) {
+                    setBelts(-HopperSubsystemConstants.UNJAM_SPEED);
+                } else if (beltsOn.getAsBoolean()) { indexFuelForShot(); } else { stopIndex(); }
             },
             () -> {
                 stopIndex();
-                stopKickFuel();
                 setBeltCurrentLimit(HopperSubsystemConstants.HOPPER_CURRENT_LIMIT_A);
             })
             // Raise the belt limit 20% for the shot only (team request 2026-08-22), restored
             // in end() above -- runs once per press, not every loop.
-            .beforeStarting(() -> setBeltCurrentLimit(HopperSubsystemConstants.HOPPER_SHOT_CURRENT_LIMIT_A));
+            .beforeStarting(() -> {
+                setBeltCurrentLimit(HopperSubsystemConstants.HOPPER_SHOT_CURRENT_LIMIT_A);
+                shotReverseTimer.restart();
+            });
     }
 
     /**
@@ -264,18 +222,12 @@ public class HopperSubsystem extends SubsystemBase{
 
     /**
      * INTAKE FEED (LT/Y, runs only while the intake rollers are rolling -- never while the
-     * slider moves): belts at normal duty, KICKER OFF (team spec 2026-07-18: "during intake
-     * only the hopper should run, not the kicker"). Keeping the kicker stopped also removes
-     * the old stopped-flywheel CIM-stall exposure this command carried even at low duty.
-     * End = stop the belts (and re-assert the kicker stopped, belt-and-suspenders).
+     * slider moves): belts at HOPPER_INTAKE_SPEED (half the normal duty). End = stop the belts.
      */
     public Command intakeFeedCommand(){
         return runEnd(
-            () -> indexFuel(),
-            () -> {
-                stopIndex();
-                stopKickFuel();
-            });
+            () -> setBelts(HopperSubsystemConstants.HOPPER_INTAKE_SPEED),
+            () -> stopIndex());
     }
 
     public void indexFuel(){
@@ -284,42 +236,15 @@ public class HopperSubsystem extends SubsystemBase{
 
     /**
      * Belts at the SHOT duty (HOPPER_SHOT_SPEED) rather than the normal one -- used by
-     * feedShooterCommand only, so B / RT / RB feed faster while the LT intake feed and the
+     * feedShooterCommand only, so the RT shot feeds faster while the LT intake feed and the
      * A manual run are untouched (team request 2026-08-29).
      */
     public void indexFuelForShot(){
         setBelts(HopperSubsystemConstants.HOPPER_SHOT_SPEED);
     }
 
-    public void kickFuel(){
-        setKicker(HopperSubsystemConstants.INDEXER_SPEED);
-    }
-
-    /**
-     * Kicker at the SHOT duty (KICKER_SHOT_SPEED) -- used by feedShooterCommand only, so
-     * B / RT / RB kick faster while the unjam and the kicker bench test keep their own duties
-     * (team request 2026-08-29). The REVERSE stays at UNJAM_SPEED, deliberately: see
-     * KICKER_SHOT_SPEED for why a faster reverse is the one change not worth making.
-     */
-    public void kickFuelForShot(){
-        setKicker(HopperSubsystemConstants.KICKER_SHOT_SPEED);
-    }
-    
-    /**
-     * Kicker backward at the proven unjam duty. NO LIVE CALLER since 2026-08-28 (team request:
-     * no hopper reversing during the shot) -- kept because feedShooterCommand still takes the
-     * reverseKicker supplier, so restoring the hold-back is a one-word change at the binding.
-     */
-    public void reverseKickFuel(){
-        setKicker(-HopperSubsystemConstants.UNJAM_SPEED);
-    }
-
     public void stopIndex(){
         setBelts(0);
-    }
-
-    public void stopKickFuel(){
-        setKicker(0);
     }
 
     @Override

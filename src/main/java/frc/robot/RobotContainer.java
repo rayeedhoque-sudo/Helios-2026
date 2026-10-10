@@ -6,13 +6,17 @@ package frc.robot;
 
 import static edu.wpi.first.units.Units.*;
 
+import java.io.File;
+import java.util.Arrays;
+import java.util.List;
+
 import com.ctre.phoenix6.swerve.SwerveModule.DriveRequestType;
 import com.ctre.phoenix6.swerve.SwerveRequest;
 import com.pathplanner.lib.auto.AutoBuilder;
 import edu.wpi.first.math.MathUtil;
 import edu.wpi.first.math.filter.SlewRateLimiter;
-import edu.wpi.first.wpilibj.Timer;
 import edu.wpi.first.wpilibj.DriverStation;
+import edu.wpi.first.wpilibj.Filesystem;
 import edu.wpi.first.wpilibj.smartdashboard.SendableChooser;
 import edu.wpi.first.wpilibj.smartdashboard.SmartDashboard;
 import edu.wpi.first.wpilibj2.command.Command;
@@ -22,14 +26,15 @@ import edu.wpi.first.wpilibj2.command.button.RobotModeTriggers;
 
 import frc.robot.Constants.TunerConstants;
 import frc.robot.util.Tunable;
-import frc.robot.Constants.SubsystemConstants.HopperSubsystemConstants;
-import frc.robot.Constants.SubsystemConstants.ShooterSubsystemConstants;
+import frc.robot.Constants.SubsystemConstants.LauncherConstants;
 import frc.robot.Constants.SubsystemConstants.Vision;
 import frc.robot.commands.CommandSwerveDrivetrain;
+import frc.robot.lib.BLine.Path;
 import frc.robot.subsystems.misc.HopperSubsystem;
 import frc.robot.subsystems.misc.IntakeSubsystem;
 import frc.robot.subsystems.misc.MatchStatus;
-import frc.robot.subsystems.misc.ShooterSubsystem;
+import frc.robot.subsystems.misc.LauncherSubsystem;
+import frc.robot.subsystems.utility.ShotCalculator;
 import frc.robot.subsystems.utility.LimelightThermalManager;
 
 public class RobotContainer {
@@ -46,11 +51,6 @@ public class RobotContainer {
             // Deadband is applied to the RAW sticks in shapeAxis() below, so the request's own
             // deadband is left at 0 (applying it twice would eat real low-speed commands).
             .withDriveRequestType(DriveRequestType.Velocity); // Velocity = CLOSED-loop velocity control
-    // Zero-output request used to FREEZE the drivetrain while a shot is held. The drive motors
-    // are Brake-neutral (TunerConstants), so Idle coasts to a stop and then holds -- a low-current
-    // "disabled" that still plants the robot. Reused every loop by lockDriveAndIntake().
-    private final SwerveRequest.Idle shotFreeze = new SwerveRequest.Idle();
-
     // Smooth translation commands: caps how fast the drive command can change (units: full-stick
     // fraction per second; 2.5 = stop-to-full in 0.4 s). Softens acceleration spikes so 4 Krakens
     // don't slam their supply limit together (brownout/wheel-slip protection) without feeling laggy.
@@ -62,12 +62,6 @@ public class RobotContainer {
     // One limiter PER AXIS -- a single shared limiter cross-couples X and Y. Rotation is left
     // unlimited so turning stays crisp. TODO tune rate (per-second) to driver preference on robot.
     private static final double kTranslationSlewRate = 2.5;
-    // Spin-up clock for the RT shot's kicker: restarted on every press, so the kicker stays
-    // shut for KICKER_SPINUP_DELAY_SEC while the flywheels wind up.
-    private final Timer kickerSpinupTimer = new Timer();
-    // DPAD UP/DOWN step for the RT flywheel target, in motor RPM (team request 2026-08-22;
-    // 200 -> 50 on 2026-08-28, 50 -> 25 on 2026-08-29, each for a finer trim).
-    private static final double kRtSpeedTrimRpm = 25.0;
     private final SlewRateLimiter xSlewLimiter = new SlewRateLimiter(kTranslationSlewRate);
     private final SlewRateLimiter ySlewLimiter = new SlewRateLimiter(kTranslationSlewRate);
 
@@ -84,39 +78,41 @@ public class RobotContainer {
     // NOT AFFECTED, deliberately: the TEST-mode layer (configureTestBindings) is untouched --
     // flipping the DS to Test still exercises every mechanism -- and the "Forward 3 m then
     // Left 3 m intaking" auto still runs the intake, since this is a teleop-layer request.
-    // OFF as of 2026-08-30 (team request): the full match layer is live again. Everything
-    // below stays in place so this is a one-word switch if drive-only is wanted again.
-    private static final boolean DRIVE_ONLY_MODE = true;
-
-    // KILL SWITCH for the teleop DPAD hood moves (2026-08-27). false = the bindings are not
-    // registered at all, so nothing can drive the hood from the driver station; the hood still
-    // holds on its brake and commanded shot angles are unaffected. See the bindings below.
-    // ON (team direction 2026-08-27: "in teleop the hood should go up 5 degrees every
-    // press"), with the overshoot accepted knowingly. THE RISK, restated so it is not
-    // rediscovered on the belt: a powered hood steps 25-55 raw units per 20 ms loop, so ONE
-    // press actually moves 25-55 units (3-7 physical deg), not 10 -- no loop can resolve a move
-    // shorter than one sample of its own travel, closed loop included. Driving softer is not
-    // available either: the hood does not break away below ~7.5 V. So each press is roughly one
-    // physical "notch" of ~3-7 deg, and about 6-12 of them reach the ceiling guard at base +
-    // one full travel, which is what protects the top stop.
-    // Set false to kill the teleop bindings outright; the test-mode bindings are separate.
-    private static final boolean HOOD_DPAD_MOVES_ENABLED = true;
-
-    // Hood: DPAD LEFT/RIGHT are PRESSED to step the hood one HOOD_UP_STEP_UNITS DOWN / UP from
-    // where it currently sits -- in teleop AND in test mode, the same closed-loop
-    // move in both (ShooterSubsystem.moveHoodToCommand). Since 2026-08-28 there is no hood
-    // voltage binding of any kind: the position loop is the only thing that drives it.
+    // OFF as of 2026-09-30 (team request, V2 launcher bring-up): the full match layer is live.
+    // Everything below stays in place so this is a one-word switch if drive-only is wanted again.
+    private static final boolean DRIVE_ONLY_MODE = false;
 
     // Intake-live slowdown: halve translation while the intake rollers spin (LT/Y hold,
     // intake or outtake) so the extended intake can't be rammed at full speed. Applied
     // BEFORE the slew limiter, so the 50% drop/restore ramps instead of stepping.
     // Rotation is untouched. TODO tune factor with driver.
     private static final double kRollerSlowFactor = 0.5;
+    // RT shot slowdown (team spec 2026-09-30): while RT is held the drive still works, but at
+    // 10% of max -- translation AND rotation. Wins over the intake slowdown.
+    private static final double kShotDriveFactor = 0.1;
+    // RB shoot-on-the-move translation cap (team 2026-10-09): 20% of max, ~0.8 m/s. Wins over
+    // both slowdowns above -- RB also runs the launcher, so isShooting() is true during it.
+    // TODO raise once the shot table + flight times are tuned (lead error grows with speed).
+    private static final double kSotmDriveFactor = 0.2;
     private double driveScale() {
+        if (shotCalc.isActive()) return kSotmDriveFactor;
+        if (launcherSS.isShooting()) return kShotDriveFactor;
         return intakeSS.rollersRunning() ? kRollerSlowFactor : 1.0;
     }
 
     /** Deadband the raw stick, then square it (sign-preserving) for finer low-speed control. */
+    /** Names (without .json) of the BLine path files in a folder, sorted; empty if the folder is missing. */
+    public static List<String> blinePathNames(File pathsDir) {
+        File[] files = pathsDir.listFiles((dir, n) -> n.endsWith(".json"));
+        if (files == null) {
+            return List.of();
+        }
+        return Arrays.stream(files)
+            .map(f -> f.getName().substring(0, f.getName().length() - ".json".length()))
+            .sorted()
+            .toList();
+    }
+
     private static double shapeAxis(double raw) {
         double v = MathUtil.applyDeadband(raw, 0.1);
         return Math.copySign(v * v, v);
@@ -131,16 +127,20 @@ public class RobotContainer {
 
     // Full robot: all subsystems constructed.
     public final CommandSwerveDrivetrain drivetrain = TunerConstants.createDrivetrain();
-    public final ShooterSubsystem shooterSS = new ShooterSubsystem(drivetrain);
+    // V2 launcher (2026-09-30). The V1 ShooterSubsystem was deleted (last in commit ccd5075).
+    public final LauncherSubsystem launcherSS = new LauncherSubsystem();
     public final IntakeSubsystem intakeSS = new IntakeSubsystem();
     public final HopperSubsystem hopperSS = new HopperSubsystem();
     // Match clock / HUB-shift tracker: publishes Match/* to NT for the companion field
     // map and rumbles the controller 3-2-1 before each HUB swap. No motors, no bindings.
     private final MatchStatus matchStatus = new MatchStatus(joystick2.getHID());
     // Limelight LED-off + shooter-idle low-res pipeline + Hailo over-temp warning. Auto-runs
-    // via the scheduler; "shooter active" = flywheels commanded to spin (needs full-res ranging).
-    public final LimelightThermalManager limelightThermal =
-        new LimelightThermalManager(Vision.CAM_LIMELIGHT, () -> shooterSS.getDesiredFlywheelVelocity() != 0);
+    // via the scheduler; "shooter active" = flywheels commanded to spin OR RB auto-aim held
+    // (both need the full-res pipeline).
+    public final LimelightThermalManager limelightThermal = new LimelightThermalManager(
+        Vision.CAM_LIMELIGHT, () -> launcherSS.isShooting() || joystick2.getHID().getRightBumperButton());
+    // RB shoot-on-the-move solution (virtual target, heading, table rpm/hood), every loop.
+    private final ShotCalculator shotCalc = new ShotCalculator(drivetrain);
 
     public RobotContainer() {
         // Build the auto chooser AFTER the drivetrain constructor has run AutoBuilder.configure.
@@ -196,13 +196,26 @@ public class RobotContainer {
                                         .finallyDo(intakeSS::stopRollers)))
                         .andThen(intakeSS.stowCommand())
                         .andThen(drivetrain.resetAutoEndTranslation()));
+        // BLine paths (team 2026-10-09): every deploy/autos/paths/*.json is added automatically,
+        // labelled with the companion start spot it begins at. Pick that spot or the path refuses
+        // to move. A bad file reports to the DS and is skipped instead of crashing boot.
+        for (String name : blinePathNames(new File(Filesystem.getDeployDirectory(), "autos/paths"))) {
+            try {
+                Path path = new Path(name);
+                String spot = CommandSwerveDrivetrain.startSpotFor(path);
+                autoChooser.addOption("BLine: " + name + " (" + (spot != null ? spot : "NO START SPOT - won't run") + ")",
+                        drivetrain.followBLinePath(path));
+            } catch (RuntimeException e) {
+                DriverStation.reportError("BLine path '" + name + "' failed to load: " + e.getMessage(), e.getStackTrace());
+            }
+        }
         SmartDashboard.putData("Auto Chooser", autoChooser);
 
         configureBindings();
         configureTestBindings();
 
         // Read-only current/temp/voltage publisher for the driver companion app (app optional).
-        new PowerTelemetry(drivetrain, shooterSS, intakeSS, hopperSS);
+        new PowerTelemetry(drivetrain, launcherSS, intakeSS, hopperSS);
 
         // Live PID tuning for the driver-companion "PID Tuning" panel. All of this no-ops when
         // SubsystemConstants.TUNING_MODE is false (the competition default).
@@ -222,37 +235,26 @@ public class RobotContainer {
         // panels.ts, CONTROLS table) mirrors these bindings by hand — update it when
         // changing anything here.
         //
-        // TEAM SPEC 2026-07-16 (shooter re-enabled by team directive; this is the FULL
-        // binding list — no other keybinds may exist):
-        //   L stick     = translate (field-centric)      R stick X = rotate  (reverted 2026-07-17)
-        //   LB          = hood all the way DOWN to this enable's base position (2026-08-29)
-        //   LT (hold)   = intake (slider out -> rollers + belts; kicker stays OFF); release = stow
-        //   A (hold)    = outtake (same choreography, rollers out); release = stow (was Y
-        //                 until 2026-08-29)
+        // TEAM SPEC 2026-09-30 (V2 launcher; this is the FULL binding list -- no other keybinds
+        // may exist):
+        //   L stick     = translate (field-centric)      R stick X = rotate
+        //   LT (hold)   = intake (slider out -> rollers + belts); release = stow
+        //   Y (hold)    = outtake (same choreography, rollers out); release = stow
         //   X           = manual stow
-        //   RT (hold)   = flywheels-only shot (2026-08-22): fixed flywheel speed, belts always,
-        //                 kicker opens 2 s after the press, HOOD NOT COMMANDED (DPAD L/R).
-        //                 Full drive + intake lockout; no vision, no auto-aim.
-        //   RB (hold)   = AUTO-AIM SHOT (2026-08-29): constant flywheel speed, hood angle
-        //                 looked up from the AprilTag distance, AND the robot turns itself to
-        //                 face the hub CENTRE (not the tag). Belts always; the kicker runs
-        //                 BACKWARD until the flywheels are at speed (spin-up delay as the
-        //                 backstop), then feeds. Sticks locked out for the hold.
-        //   (Kicker at-speed gate added 2026-07-18 by team request.)
-        //   B (hold)    = manual hopper belts only (kicker OFF)
-        //   VIEW (hold) = hopper unjam: reverse belts + kicker (added 2026-07-18)
-        //   Y (hold)    = fixed feed shot (2026-08-29): fixed hood units + fixed flywheel
-        //                 RPM, otherwise identical to RT. (No search-align binding is left
-        //                 on the match layer -- A used to hold it.)
-        //   DPAD-UP/DOWN       = RT flywheel target +/- 25 motor RPM per press (2026-08-22;
-        //                        200 -> 50 -> 25 by 2026-08-29). Does NOT affect RB's auto-aim
-        //                        speed.
-        //   DPAD-LEFT/RIGHT    = step the hood DOWN / UP HOOD_UP_STEP_UNITS per press, on the
-        //                        position loop (2026-08-27/28; replaced the held voltage jog,
-        //                        which replaced the +-90 deg heading snaps)
-        //   MENU        = manual heading re-zero -- the ONLY in-match re-center (2026-07-21:
-        //                 AprilTag auto-seed now stops at the first enable after boot)
-        // REMOVED 2026-07-16: DPAD hood jog, RT test shot. (MENU re-zero re-added 2026-07-17.)
+        //   A (hold)    = manual hopper belts only
+        //   VIEW (hold) = unjam: reverse belts + feeder (slow); intake untouched
+        //   RT (hold)   = SHOT: flywheels at the DPAD-set rpm + feeder; belts (and feeder, slowly) reverse for the first
+        //                 HOPPER_SHOT_REVERSE_SEC, then run ONLY while both are at speed; slider extends 0.5 s then stows, repeating (rollers in at 10%); drive 10%.
+        //                 Release: flywheels/feeder coast, slider stows. Hood NOT commanded.
+        //   DPAD L/R    = RT flywheel target -/+ 100 flywheel RPM (start 2000, 0-4000)
+        //   DPAD UP/DN  = (hold) hood up/down at 1 deg/s (0-29 deg above the bottom stop; the hood
+        //                 re-homes on every enable and ignores the DPAD until homed)
+        //   MENU        = manual heading re-zero
+        //   RB (hold)   = SHOOT ON THE MOVE: left stick still drives (capped at 20%), the robot
+        //                 faces the lead-corrected hub, flywheel rpm + hood follow the shot
+        //                 table, and the belts feed (RT's choreography) only while aimed, hood
+        //                 at target and flywheels + feeder at speed. RB and RT exclude each other.
+        // REMOVED 2026-09-30: LB hood-to-floor, B feed shot, old DPAD trim/hood steps.
 
         //DRIVE SUBSYSTEM
             // Note that X is defined as forward according to WPILib convention,
@@ -268,14 +270,24 @@ public class RobotContainer {
                 final java.util.function.DoubleSupplier driveVelY =
                     () -> ySlewLimiter.calculate(shapeAxis(-joystick2.getLeftX()) * driveScale()) * MaxSpeed; // Left = negative LEFT-X
                 final java.util.function.DoubleSupplier driveRot =
-                    () -> shapeAxis(-joystick2.getRightX()) * MaxAngularRate; // Rotate on RIGHT-X, counterclockwise
+                    () -> shapeAxis(-joystick2.getRightX()) * MaxAngularRate
+                        * (launcherSS.isShooting() ? kShotDriveFactor : 1.0); // Rotate on RIGHT-X, counterclockwise; 10% during RT
+                // While RB runs (shotCalc.isActive()) the SAME default command swaps to the aim request:
+                // same sticks + slew limiters, heading servoed to the shot. Aiming here instead
+                // of in an RB drivetrain command keeps the limiters continuous (no stop/restart
+                // dip on press or release) and leaves MENU re-zero usable mid-shot.
                 drivetrain.setDefaultCommand(
                     // Drivetrain will execute this command periodically.
-                    drivetrain.applyRequest(() ->
-                        drive.withVelocityX(driveVelX.getAsDouble())
+                    drivetrain.applyRequest(() -> {
+                        if (shotCalc.isActive()) {
+                            ShotCalculator.Shot shot = shotCalc.getShot();
+                            return drivetrain.faceHeading(driveVelX.getAsDouble(), driveVelY.getAsDouble(),
+                                shot.heading(), shot.headingRateRadPerSec());
+                        }
+                        return drive.withVelocityX(driveVelX.getAsDouble())
                             .withVelocityY(driveVelY.getAsDouble())
-                            .withRotationalRate(driveRot.getAsDouble())
-                    )
+                            .withRotationalRate(driveRot.getAsDouble());
+                    })
                     // Zero the limiters every time the default command (re)starts -- after auto or
                     // any other command releases the drivetrain. SlewRateLimiter
                     // bounds change by rate*elapsed-since-last-calculate, so after a multi-second gap
@@ -301,69 +313,12 @@ public class RobotContainer {
             // a match (collision skew, gyro drift, camera down -- all of it lands here).
                 joystick2.start().and(RobotModeTriggers.teleop()).onTrue(drivetrain.runOnce(drivetrain::seedFieldCentric));
 
-            // A used to be search-align (rotate until a SCORING tag of our alliance is seen,
-            // then face it). REASSIGNED to outtake 2026-08-29 by team request; there is no
-            // search-align binding left on the match layer. searchAndAlignCommand and
-            // seesScoringTag/getDegreesToAlignToTarget are all still there if it comes back.
-            // DPAD-UP / DOWN (press) = trim the RT flywheel target by +/- kRtSpeedTrimRpm motor
-            // RPM (team
-            // request 2026-08-22). ~1.6 m/s of surface speed per press. Takes effect mid-hold:
-            // flywheelOnlyShotCommand re-reads the target every loop. Clamped to
-            // [0, SHOT_MAX_MOTOR_RPS] in the subsystem, and NOT persisted -- a redeploy returns
-            // it to RT_FLYWHEEL_SURFACE_SPEED. Trims RT ONLY -- RB's auto-aim speed is a
-            // separate constant and is not trimmable from the controller.
-            // Not registered in DRIVE_ONLY_MODE -- it trims the RT shot, and RT is gone.
-                if (!DRIVE_ONLY_MODE) {
-                    joystick2.povUp().and(RobotModeTriggers.teleop())
-                        .onTrue(shooterSS.trimRtSpeedCommand(kRtSpeedTrimRpm));
-                    joystick2.povDown().and(RobotModeTriggers.teleop())
-                        .onTrue(shooterSS.trimRtSpeedCommand(-kRtSpeedTrimRpm));
-                }
-
-            // DPAD-RIGHT (PRESS) = raise the hood by HOOD_UP_STEP_UNITS, EVERY PRESS (team
-            // direction 2026-08-27). The target is read off the hood itself at the moment of
-            // the press -- current + step -- not off a stored setpoint, so presses keep working
-            // from wherever the hood actually ended up (see ShooterSubsystem.getHoodAngle).
-            // DPAD-LEFT is the mirror: one step DOWN from wherever the hood is (team request
-            // 2026-08-28, replacing the old "return to this enable's base in one press"). Both
-            // read the live angle, so a press always steps from reality; clampDesiredAngle still
-            // stops LEFT at the enable-time floor and RIGHT at the ceiling.
-            //
-            // CLOSED LOOP since 2026-08-27 (team direction: "make the DPAD use PID"). A press
-            // writes a setpoint and nothing else; the position loop in periodic() drives it,
-            // bounded by the settle band, the voltage caps and the travel guards. Read
-            // ShooterSubsystem.moveHoodToCommand before tuning this -- it needs a NON-ZERO kP
-            // (>= ~0.17) to break the hood away at all, and there is no move timeout any more.
-                if (HOOD_DPAD_MOVES_ENABLED) {
-                    // LB (press) = send the hood all the way DOWN to this enable's base position
-                    // in one press (team request 2026-08-29), replacing the X-lock brake toggle
-                    // that used to live here. Same closed-loop path as the DPAD steps -- it just
-                    // asks for the floor instead of one step. getHoodFloorAngle IS the
-                    // clampDesiredAngle floor, so the descent stops at the enable-time datum and
-                    // cannot be driven into the bottom stop. Inside the kill switch with the
-                    // DPAD moves, so HOOD_DPAD_MOVES_ENABLED = false still kills every
-                    // driver-station hood move.
-                    // LB stays live in DRIVE_ONLY_MODE (team request 2026-08-30): it is the
-                    // one-press way back to this enable's hood floor, so the driver can always
-                    // undo a run of DPAD steps.
-                    joystick2.leftBumper().and(RobotModeTriggers.teleop())
-                        .onTrue(shooterSS.moveHoodToCommand(shooterSS::getHoodFloorAngle));
-                    joystick2.povLeft().and(RobotModeTriggers.teleop())
-                        .onTrue(shooterSS.moveHoodToCommand(
-                            () -> shooterSS.getHoodAngle()
-                                - ShooterSubsystemConstants.HOOD_UP_STEP_UNITS));
-                    joystick2.povRight().and(RobotModeTriggers.teleop())
-                        .onTrue(shooterSS.moveHoodToCommand(
-                            () -> shooterSS.getHoodAngle()
-                                + ShooterSubsystemConstants.HOOD_UP_STEP_UNITS));
-                }
 
             drivetrain.registerTelemetry(logger::telemeterize);
 
         // DRIVE-ONLY MODE STOPS HERE (team request 2026-08-30). Everything above -- the two
-        // sticks, the disabled-idle that applies brake neutral, MENU re-zero, LB hood-to-floor
-        // and the DPAD LEFT/RIGHT hood steps -- stays live. Everything below (intake, hopper, and all four
-        // shot bindings) is never registered. Flip DRIVE_ONLY_MODE to false to restore it all.
+        // sticks, the disabled-idle that applies brake neutral, MENU re-zero -- stays live.
+        // Everything below (intake, hopper, launcher) is never registered. Flip DRIVE_ONLY_MODE to false to restore it all.
             if (DRIVE_ONLY_MODE) {
                 return;
             }
@@ -395,128 +350,56 @@ public class RobotContainer {
             // A (hold) = MANUAL hopper run: belts ONLY, kicker stays OFF (team spec 2026-08-22).
             // Moved off B 2026-08-29 to give B the feed shot.
             joystick2.a().and(RobotModeTriggers.teleop()).whileTrue(hopperSS.manualRunCommand());
-            // VIEW (hold) = UNJAM: reverse belts + kicker at low duty to back a stuck ball out.
+            // VIEW (hold) = UNJAM: belts backward + feeder backward super slowly (team 2026-10-07).
+            // No intake (team 2026-10-09): the slider and rollers stay wherever they are.
             // (Direction-test diagnostics removed 2026-07-18 after the fix was confirmed: the
             // belts were fighting from opposite flashed inversion; both motors now same-sign.)
-            joystick2.back().and(RobotModeTriggers.teleop()).whileTrue(hopperSS.unjamCommand());
+            // V2: the kicker is gone, so the launcher feeder reverses with the belts instead.
+            joystick2.back().and(RobotModeTriggers.teleop())
+                .whileTrue(hopperSS.unjamCommand().alongWith(launcherSS.feederUnjamCommand()));
 
-        //SHOOTER (re-enabled by team directive 2026-07-16)
-            // SHOT LOCKOUT (team request 2026-07-17): while RT or RB is held, ONLY the shooter +
-            // hopper/kicker act. Both groups REQUIRE drivetrain + intake and run kCancelIncoming,
-            // so every drive / intake / other binding is BLOCKED for the whole hold. The driver
-            // can no longer ABORT a shot by pressing another control -- RELEASING the trigger is
-            // the only way out (whileTrue cancels on release).
-            //
-            // RT (hold) = FLYWHEELS-ONLY SHOT (team request 2026-08-22, replaced the vision
-            // auto-aim shot): spin the flywheels to RT_FLYWHEEL_SURFACE_SPEED, belts always,
-            // kicker after a 2 s spin-up delay (KICKER_SPINUP_DELAY_SEC). The HOOD IS NOT COMMANDED -- it stays
-            // wherever the DPAD jog left it, and it stays there on release too (no
-            // stopShooterCommand, which no longer moves the hood at all). Aiming is the driver's
-            // job: no vision, no auto-rotate. Same drive + intake lockout as RB, so aim BEFORE
-            // pressing. Release: flywheels coast, hood unchanged.
+        //LAUNCHER (V2, team spec 2026-09-30)
+            // RT (hold) = SHOT. The launcher spins the flywheels (DPAD-set rpm) and the feeder
+            // together; the hopper belts run ONLY while both are at speed, re-checked every loop,
+            // so a ball dipping the wheels pauses the belts until they recover. The intake
+            // slider extends for 0.5 s, retracts to full stow, and repeats (rollers in at 10%) for the whole hold. The drivetrain is NOT
+            // required -- the default drive keeps running at 10% (driveScale). kCancelIncoming:
+            // releasing RT is the only way out. Release: flywheels/feeder coast, slider stows.
             joystick2.rightTrigger().and(RobotModeTriggers.teleop())
-                .whileTrue(shooterSS.flywheelOnlyShotCommand()
+                .whileTrue(launcherSS.shootCommand()
                     .alongWith(
-                        // Belts always; kicker opens KICKER_SPINUP_DELAY_SEC after the trigger
-                        // (team request 2026-08-22) instead of on isFlywheelAtSpeed(), which
-                        // never opened with the velocity loop untuned. The timer restarts with
-                        // the group below, so every press waits the full spin-up.
-                        // NO REVERSE (team request 2026-08-28). The kicker used to run
-                        // BACKWARDS for the whole spin-up window (2026-08-24) to hold fuel
-                        // off the flywheels; it now simply sits stopped until the delay
-                        // expires, as it did before that. Passing () -> false rather than
-                        // deleting the parameter keeps feedShooterCommand's shape -- the
-                        // commented-out RB binding below already passes false the same way.
-                        hopperSS.feedShooterCommand(() -> true,
-                            () -> kickerSpinupTimer.hasElapsed(
-                                HopperSubsystemConstants.KICKER_SPINUP_DELAY_SEC),
-                            () -> false),
-                        lockDriveAndIntake())
-                    .beforeStarting(kickerSpinupTimer::restart)
-                    .withInterruptBehavior(Command.InterruptionBehavior.kCancelIncoming));
-            // B (hold) = FIXED FEED SHOT (team request 2026-08-29; it briefly sat on Y the
-            // same day): hood to FEED_SHOT_HOOD_UNITS above this enable's floor,
-            // flywheels to FEED_SHOT_MOTOR_RPM. Everything else is RT's behaviour, reusing RT's
-            // parts: belts always, kicker only after KICKER_SPINUP_DELAY_SEC, same drive+intake
-            // lockout, same kCancelIncoming hold. The hood is commanded ONCE at the press (see
-            // feedShotCommand) and is NOT returned on release.
-            joystick2.b().and(RobotModeTriggers.teleop())
-                .whileTrue(shooterSS.feedShotCommand()
-                    .alongWith(
-                        hopperSS.feedShooterCommand(() -> true,
-                            () -> kickerSpinupTimer.hasElapsed(
-                                HopperSubsystemConstants.KICKER_SPINUP_DELAY_SEC),
-                            () -> false),
-                        lockDriveAndIntake())
-                    .beforeStarting(kickerSpinupTimer::restart)
-                    .withInterruptBehavior(Command.InterruptionBehavior.kCancelIncoming));
-            // RB (hold) = AUTO-AIM SHOT (team request 2026-08-29). Constant flywheel speed
-            // (AUTOAIM_FLYWHEEL_MOTOR_RPM), belts always, hood commanded from the measured
-            // AprilTag distance, and -- unlike every other shot -- THE ROBOT TURNS ITSELF to put
-            // the shooter on the hub CENTRE (team request 2026-08-29).
-            //
-            // The rotation is why this does NOT use lockDriveAndIntake(): that freezes the
-            // drivetrain with an Idle request, which is the opposite of what a self-aiming shot
-            // needs. Instead the drivetrain runs the SAME heading servo the other align commands
-            // use (aimUntilAligned), with () -> false so it never ends -- it holds aim for the
-            // whole press. It still REQUIRES the drivetrain, so the driver's sticks are locked
-            // out exactly as before; the robot simply turns instead of standing still.
-            // Translation is zero throughout, so the robot pivots in place and the distance the
-            // hood was set from does not change underneath it.
-            //
-            // It aims at the HUB CENTRE, not the tag. The tags sit off to one side of the hub
-            // face (0.3556 m on tags 9/25, dead centre on 10/26 -- FieldConstants), which at 3 m
-            // is ~6.8 deg, more than 3x the 2 deg aim tolerance. Aiming at the tag would clip
-            // the rim on the offset faces.
-            //
-            // THE KICKER RUNS BACKWARD until the flywheels are at speed (or the spin-up delay
-            // expires), then feeds -- never idle in between. The aim veto that briefly gated the
-            // feed here was REMOVED 2026-08-29 after it stalled the shot on the robot; see the
-            // gates below. If the kicker never
-            // opens on the robot, the heading servo not converging is the first suspect --
-            // watch "Aimed At Target" on the Shooter dashboard tab.
-            //
-            // The hood moving on its own here is a deliberate, team-approved exception to the
-            // 2026-08-26 no-automatic-hood-motion rule -- see autoAimShotCommand.
-            // Shares kickerSpinupTimer with RT: both groups require the drivetrain and run
-            // kCancelIncoming, so only one of them can ever own the timer at a time.
+                        hopperSS.feedShooterCommand(launcherSS::isReadyToFeed),
+                        intakeSS.sliderCycleCommand())
+                    .withInterruptBehavior(Command.InterruptionBehavior.kCancelIncoming))
+                .onFalse(intakeSS.stowCommand());
+            // DPAD LEFT/RIGHT (press) = RT flywheel target -/+ one step. DPAD UP/DOWN (hold) =
+            // hood moves up/down at a constant rate. No subsystem requirement, so they work mid-shot.
+            joystick2.povLeft().and(RobotModeTriggers.teleop())
+                .onTrue(launcherSS.stepFlywheelRpmCommand(-LauncherConstants.FLYWHEEL_STEP_RPM));
+            joystick2.povRight().and(RobotModeTriggers.teleop())
+                .onTrue(launcherSS.stepFlywheelRpmCommand(LauncherConstants.FLYWHEEL_STEP_RPM));
+            joystick2.povUp().and(RobotModeTriggers.teleop())
+                .whileTrue(launcherSS.jogHoodCommand(LauncherConstants.HOOD_JOG_DEG_PER_SEC));
+            joystick2.povDown().and(RobotModeTriggers.teleop())
+                .whileTrue(launcherSS.jogHoodCommand(-LauncherConstants.HOOD_JOG_DEG_PER_SEC));
+            // RB (hold) = SHOOT ON THE MOVE (redesigned 2026-10-09 after LUNATECS, Ninjas 4744
+            // and 1833). Aiming happens in the default drive while shotCalc is active (see above). The
+            // group is RT's shot with the table rpm/hood, and the belts also wait for aim + hood.
+            // kCancelIncoming, like RT: whichever of RB/RT is pressed first wins. Release:
+            // flywheels/feeder coast, slider stows, the drive goes back to normal sticks.
+            // TODO verify on robot in open space, Limelight mount pose set first: robot must turn
+            // TOWARD the hub, and the field map must show the robot where it really is.
             joystick2.rightBumper().and(RobotModeTriggers.teleop())
-                .whileTrue(shooterSS.autoAimShotCommand()
+                .whileTrue(launcherSS.autoShootCommand(
+                        () -> shotCalc.getShot().flywheelRpm(), () -> shotCalc.getShot().hoodDeg())
                     .alongWith(
-                        // THE KICKER IS NEVER IDLE DURING A SHOT: it is either backing fuel
-                        // off the winding-up wheels, or feeding. The two gates below are exact
-                        // complements, so there is no window where it just sits there.
-                        //
-                        // That window is the bug the team reported on 2026-08-29 ("the kicker
-                        // stops running after the flywheels are at speed"). The forward gate
-                        // used to be `timer AND isAimedAtTarget()`, so once the reverse ended
-                        // the kicker sat STOPPED until the heading servo came within 2 deg --
-                        // and if the servo never converged, forever. The aim veto is gone: with
-                        // the servo unproven on the robot, a gate that can block the shot
-                        // indefinitely is worse than a shot taken slightly off-aim. The robot
-                        // still rotates; the aim just no longer vetoes the feed. Restore the
-                        // `&& shooterSS.isAimedAtTarget()` once the servo is confirmed to
-                        // converge -- "Aimed At Target" on the Shooter tab is the check.
-                        hopperSS.feedShooterCommand(() -> true,
-                            // FEED once the wheels are up -- or once the spin-up delay has run
-                            // out, the backstop for the untuned velocity loop (isFlywheelAtSpeed
-                            // has never reliably latched on this robot, which is why RT runs off
-                            // a timer at all).
-                            () -> shooterSS.isFlywheelAtSpeed()
-                                || kickerSpinupTimer.hasElapsed(
-                                    HopperSubsystemConstants.KICKER_SPINUP_DELAY_SEC),
-                            // REVERSE until then (team request 2026-08-29), holding fuel off the
-                            // winding-up wheels. Exactly the complement of the gate above.
-                            () -> !shooterSS.isFlywheelAtSpeed()
-                                && !kickerSpinupTimer.hasElapsed(
-                                    HopperSubsystemConstants.KICKER_SPINUP_DELAY_SEC)),
-                        // Turn to face the hub centre, and keep the intake locked out. Never
-                        // ends -- the hold is what cancels it.
-                        drivetrain.aimUntilAligned(
-                            shooterSS::getAutoAimFieldHeadingDegrees, () -> false),
-                        intakeSS.run(intakeSS::stopRollers))
-                    .beforeStarting(kickerSpinupTimer::restart)
-                    .withInterruptBehavior(Command.InterruptionBehavior.kCancelIncoming));
+                        hopperSS.feedShooterCommand(() -> launcherSS.isReadyToFeed()
+                            && launcherSS.isHoodAtTarget() && shotCalc.isAimed()),
+                        intakeSS.sliderCycleCommand())
+                    .beforeStarting(() -> shotCalc.setActive(true))
+                    .finallyDo(() -> shotCalc.setActive(false))
+                    .withInterruptBehavior(Command.InterruptionBehavior.kCancelIncoming))
+                .onFalse(intakeSS.stowCommand());
     }
 
     /**
@@ -554,52 +437,7 @@ public class RobotContainer {
             // X (hold) = both belt motors together, no kicker.
             joystick2.x().and(RobotModeTriggers.test())
                 .whileTrue(hopperSS.intakeFeedCommand());
-            // B (hold) = kicker alone.
-            joystick2.b().and(RobotModeTriggers.test())
-                .whileTrue(hopperSS.kickerTestCommand());
 
-        //SHOOTER (manual/fixed setpoints only -- no vision, no auto-aim)
-            // Y (hold) = manual test-fire: feedAngleShotCommand's fixed hood angle + flywheel
-            // speed (RB_FEED_ANGLE / RB_FEED_SURFACE_SPEED -- named for the binding RB used to
-            // hold; RB is the auto-aim shot since 2026-08-29 and no longer shares this).
-            // Belts always, kicker gated on at-speed. Actually launches a
-            // ball (not just a flywheel spin), so it verifies the whole feed path end to end.
-            joystick2.y().and(RobotModeTriggers.test())
-                .whileTrue(shooterSS.feedAngleShotCommand()
-                    .alongWith(hopperSS.feedShooterCommand(() -> true, shooterSS::isFlywheelAtSpeed,
-                        () -> false)))
-                .onFalse(shooterSS.stopShooterCommand());
-            // DPAD LEFT / RIGHT (PRESS) = the SAME closed-loop hood moves as the match
-            // bindings (ShooterSubsystem.moveHoodToCommand): right steps up by
-            // HOOD_UP_STEP_UNITS from wherever the hood is, left steps down by the same amount.
-            // Flywheels stay off; periodic() still applies the travel guard and the
-            // feedback gate.
-            //
-            // The held OPEN-LOOP jog that used to live here is GONE (2026-08-28, team
-            // direction: hood voltage throttle removed everywhere). CONSEQUENCE: the hood can
-            // no longer be driven ONTO a hard stop from the controller -- every setpoint is
-            // clamped to [enable datum, datum + travel] -- so the encoder-anchor calibration
-            // (handoff on-robot verify item 2) has to be done by moving the hood by hand.
-            joystick2.povLeft().and(RobotModeTriggers.test())
-                .onTrue(shooterSS.moveHoodToCommand(
-                    () -> shooterSS.getHoodAngle() - ShooterSubsystemConstants.HOOD_UP_STEP_UNITS));
-            joystick2.povRight().and(RobotModeTriggers.test())
-                .onTrue(shooterSS.moveHoodToCommand(
-                    () -> shooterSS.getHoodAngle() + ShooterSubsystemConstants.HOOD_UP_STEP_UNITS));
-    }
-
-    /**
-     * FREEZE the drivetrain AND lock the intake for the duration of a shot (team request
-     * 2026-07-17: "no subsystem but hopper + kicker works while shooting"). Returned as a
-     * never-ending parallel so it holds until the shot group is cancelled on trigger release.
-     * The shot groups compose this in and run kCancelIncoming, so requiring these two
-     * subsystems is what BLOCKS every drive / intake binding for the whole hold.
-     */
-    private Command lockDriveAndIntake() {
-        return Commands.parallel(
-            drivetrain.applyRequest(() -> shotFreeze), // requires drivetrain -> blocks default drive + all drive binds
-            intakeSS.run(intakeSS::stopRollers)        // requires intake -> blocks LT/Y/X, keeps rollers braked
-        );
     }
 
     public Command getAutonomousCommand() {

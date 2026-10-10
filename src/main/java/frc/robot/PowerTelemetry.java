@@ -15,7 +15,7 @@ import edu.wpi.first.wpilibj.RobotController;
 import frc.robot.commands.CommandSwerveDrivetrain;
 import frc.robot.subsystems.misc.HopperSubsystem;
 import frc.robot.subsystems.misc.IntakeSubsystem;
-import frc.robot.subsystems.misc.ShooterSubsystem;
+import frc.robot.subsystems.misc.LauncherSubsystem;
 
 /**
  * Read-only power/temperature telemetry publisher for an optional driver companion dashboard.
@@ -30,23 +30,23 @@ public class PowerTelemetry {
     // readout and keeps this well off the control loop's own signal rates.
     private static final double UPDATE_PERIOD_SECONDS = 0.1; // s (10 Hz)
 
-    // Monitored mechanism count: 8 swerve (4 modules x drive+steer) + 4 shooter flywheels
-    // + 1 hood + 1 intake roller + 1 intake slider + 2 hopper belts = 17.
+    // Monitored mechanism count (V2, 2026-09-30): 8 swerve (4 modules x drive+steer) + 3
+    // flywheels + feeder + hood + intake roller + intake slider + 2 hopper belts = 17.
     private static final int NUM_MOTORS = 17;
 
     // Publish order/labels -- index-aligned with stator/supply/temp below.
     private static final String[] NAMES = {
         "DriveFL", "SteerFL", "DriveFR", "SteerFR", "DriveBL", "SteerBL", "DriveBR", "SteerBR",
-        "ShooterA", "ShooterB", "ShooterC", "ShooterD", "Hood",
+        "Flywheel15", "Flywheel14", "Flywheel13", "Feeder", "Hood",
         "IntakeRoller", "IntakeSlider", "HopperA", "HopperB"
     };
 
-    // TalonFX motors (13: 8 swerve + 4 shooter flywheels + 1 intake roller) and the NAMES
+    // TalonFX motors (14: 8 swerve + 3 flywheels + feeder + hood + intake roller) and the NAMES
     // index each one publishes into.
     private final TalonFX[] talons;
     private final int[] talonSlots;
 
-    // SparkMax motors (4: hood, intake slider, 2x hopper) and their NAMES indices.
+    // SparkMax motors (3: intake slider, 2x hopper) and their NAMES indices.
     private final SparkMax[] sparks;
     private final int[] sparkSlots;
 
@@ -76,9 +76,9 @@ public class PowerTelemetry {
      * Wires up telemetry for the given already-constructed subsystems. Does not construct or
      * configure any motor -- only reads objects the subsystems already own via their getters.
      */
-    public PowerTelemetry(CommandSwerveDrivetrain drivetrain, ShooterSubsystem shooterSS,
+    public PowerTelemetry(CommandSwerveDrivetrain drivetrain, LauncherSubsystem launcherSS,
                            IntakeSubsystem intakeSS, HopperSubsystem hopperSS) {
-        TalonFX[] flywheels = shooterSS.getFlywheelMotors();
+        TalonFX[] flywheels = launcherSS.getFlywheelMotors();
         SparkMax[] hopperMotors = hopperSS.getHopperMotors();
 
         // Module order 0=FL,1=FR,2=BL,3=BR matches TunerConstants.createDrivetrain()'s
@@ -88,15 +88,18 @@ public class PowerTelemetry {
             drivetrain.getModule(1).getDriveMotor(), drivetrain.getModule(1).getSteerMotor(),
             drivetrain.getModule(2).getDriveMotor(), drivetrain.getModule(2).getSteerMotor(),
             drivetrain.getModule(3).getDriveMotor(), drivetrain.getModule(3).getSteerMotor(),
-            flywheels[0], flywheels[1], flywheels[2], flywheels[3],
+            flywheels[0], flywheels[1], flywheels[2],
+            launcherSS.getFeederMotor(), launcherSS.getHoodMotor(),
             intakeSS.getRollerMotor()
         };
-        talonSlots = new int[] { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13 };
+        // Same fixed 17-slot layout the companion expects: 11 = feeder (was ShooterD),
+        // 12 = hood (now a TalonFX X44, was the NEO 550 SparkMax).
+        talonSlots = new int[] { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13 };
 
         sparks = new SparkMax[] {
-            shooterSS.getHoodMotor(), intakeSS.getSliderMotor(), hopperMotors[0], hopperMotors[1]
+            intakeSS.getSliderMotor(), hopperMotors[0], hopperMotors[1]
         };
-        sparkSlots = new int[] { 12, 14, 15, 16 };
+        sparkSlots = new int[] { 14, 15, 16 };
 
         // Collect one StatusSignal per TalonFX per measurement (read-only -- StatusSignal has
         // no setter). setUpdateFrequencyForAll below only touches THESE signals, never the
@@ -117,6 +120,9 @@ public class PowerTelemetry {
         System.arraycopy(tempSignals, 0, allSignals, talons.length * 2, talons.length);
         System.arraycopy(voltSignals, 0, allSignals, talons.length * 3, talons.length);
         BaseStatusSignal.setUpdateFrequencyForAll(1.0 / UPDATE_PERIOD_SECONDS, allSignals);
+        // EXCEPTION: the hood's stator current drives its homing stop and stall cutoff
+        // (LauncherSubsystem), which debounce over 0.1-0.25 s -- keep it at 50 Hz, not 10.
+        launcherSS.getHoodMotor().getStatorCurrent().setUpdateFrequency(50);
 
         NetworkTable table = NetworkTableInstance.getDefault().getTable("CompanionTelemetry");
         namesPub = table.getStringArrayTopic("names").publish();

@@ -32,7 +32,7 @@ public class IntakeSubsystem extends SubsystemBase {
     
     //State Machine
         public enum IntakeSSTATE{
-            INTAKE_STATE, OUTTAKE_STATE, STOW_STATE;
+            INTAKE_STATE, OUTTAKE_STATE, AGITATE_STATE, STOW_STATE;
         }
     
     //Tracker Variables
@@ -61,7 +61,7 @@ public class IntakeSubsystem extends SubsystemBase {
     public IntakeSubsystem(){
 
         // Conservative-start current limits + neutral mode (Hardware-Data-Sheet sec.7). TODO tune on robot.
-            // Front rollers: Kraken X44 - stator 40A / supply 25A, Coast (bumped 2026-07-10 from
+            // Front rollers: Kraken X60 (was X44; CAN 16 since 2026-09-30) - stator 40A / supply 25A, Coast (bumped 2026-07-10 from
             // the conservative 30/15 start; matches Hardware-Data-Sheet sec.7 mid column, max is
             // 60/40 if grab torque is still short). Stator = grab torque; supply caps battery
             // draw. Worst-case steady supply = duty x stator: 0.5 x 40 = 20 A < 25 A, so the
@@ -131,8 +131,9 @@ public class IntakeSubsystem extends SubsystemBase {
 
         // True while the rollers are commanded to spin (intake OR outtake) -- the
         // drivetrain reads this to halve its translation speed while the intake is live.
+        // AGITATE (shot/unjam slow roll) does not count -- those set their own drive speed.
         public boolean rollersRunning(){
-            return desiredState != IntakeSSTATE.STOW_STATE;
+            return desiredState == IntakeSSTATE.INTAKE_STATE || desiredState == IntakeSSTATE.OUTTAKE_STATE;
         }
 
         // True while the slider motor is not actually turning (measured encoder rpm, not
@@ -196,7 +197,7 @@ public class IntakeSubsystem extends SubsystemBase {
             return moveSliderUntilStall(IntakeSubsystemConstants.SLIDER_DUTY);
         }
 
-        // ROLLER-ONLY TEST: spin the rollers (Kraken X44, CAN 18) while held, stop on release.
+        // ROLLER-ONLY TEST: spin the rollers (Kraken X60, CAN 16) while held, stop on release.
         // Never commands the slider -- it stays wherever it is (brake mode holds it).
         public Command rollerTestCommand(boolean inward){
             return startEnd(
@@ -222,6 +223,21 @@ public class IntakeSubsystem extends SubsystemBase {
             );
         }
 
+        // RT SHOT + VIEW UNJAM (team spec 2026-09-30, rollers 2026-10-07): rollers inward at
+        // ROLLER_AGITATE_SPEED (stopped again on end/interrupt); the slider extends for only
+        // SLIDER_CYCLE_EXTEND_SEC (a partial stroke, never to the outer stop), then retracts
+        // fully to the stow stop, and repeats for the whole hold. Both legs are the same
+        // stall-stopped move as extend/retract (pulley-snap guard intact); the extend leg is
+        // just cut short by the timeout. The RT binding's onFalse(stowCommand) brings it home.
+        public Command sliderCycleCommand(){
+            return Commands.sequence(
+                    Commands.runOnce(() -> desiredState = IntakeSSTATE.AGITATE_STATE),
+                    Commands.repeatingSequence(
+                        extendSliderCommand().withTimeout(IntakeSubsystemConstants.SLIDER_CYCLE_EXTEND_SEC),
+                        retractSliderCommand())
+            ).finallyDo(this::stopRollers);
+        }
+
         public Command stowCommand(){
             return Commands.sequence(
                     // Immediate, unconditional roller stop (don't wait a loop for
@@ -241,6 +257,9 @@ public class IntakeSubsystem extends SubsystemBase {
                 }
                 else if(desiredState == IntakeSSTATE.OUTTAKE_STATE){
                     outtake();
+                }
+                else if(desiredState == IntakeSSTATE.AGITATE_STATE){
+                    intakeMotor.set(IntakeSubsystemConstants.ROLLER_AGITATE_SPEED);
                 } else {
                     // STOW: actively brake (stopMotor = coast, which reads as "still rolling").
                     intakeMotor.setControl(rollerBrake);

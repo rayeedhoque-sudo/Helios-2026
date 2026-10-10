@@ -65,6 +65,22 @@ public class TunerConstants {
     // This needs to be tuned to your individual robot
     private static final Current kSlipCurrent = Amps.of(120);
 
+    /**
+     * Drive-motor current limits, scaled. scale = 1 is the normal set (stator = kSlipCurrent,
+     * supply 20 A burst folding to 15 A after 0.25 s -- see the history below); the drivetrain
+     * applies scale = DriveLimitConstants.LOW_BATTERY_LIMIT_SCALE while the battery is low.
+     * Every field is set explicitly so re-applying it can never leave a stale value behind.
+     */
+    public static CurrentLimitsConfigs driveCurrentLimits(double scale) {
+        return new CurrentLimitsConfigs()
+            .withStatorCurrentLimit(kSlipCurrent.times(scale))
+            .withStatorCurrentLimitEnable(true)
+            .withSupplyCurrentLimit(Amps.of(20 * scale))
+            .withSupplyCurrentLowerLimit(Amps.of(15 * scale))
+            .withSupplyCurrentLowerTime(Seconds.of(0.25))
+            .withSupplyCurrentLimitEnable(true);
+    }
+
     // Initial configs for the drive and steer motors and the azimuth encoder; these cannot be null.
     // Some configs will be overwritten; check the `with*InitialConfigs()` API documentation.
     private static final TalonFXConfiguration driveInitialConfigs = new TalonFXConfiguration()
@@ -102,16 +118,13 @@ public class TunerConstants {
         // affects current, because the draw comes from accelerating and pushing, not from
         // cruising. If the robot needs to be SLOWER as well, that is MaxSpeed in
         // RobotContainer (currently 0.8 of kSpeedAt12Volts).
-        .withCurrentLimits(new CurrentLimitsConfigs()
-            .withSupplyCurrentLimit(Amps.of(20))
-            // Burst-then-fall-back: 40 A is allowed for accelerations, but sustained draw
-            // (pushing matches, stalls) drops to 30 A after 0.25 s. Window shortened 0.5 ->
-            // 0.25 s (2026-07-18): teleop is a stream of fresh transients that each re-arm
-            // the window, so a 0.5 s window meant the drives lived at full burst and the
-            // fold-back never engaged during a full-stick reversal (which also lasted 0.5 s).
-            .withSupplyCurrentLowerLimit(Amps.of(15))
-            .withSupplyCurrentLowerTime(Seconds.of(0.25))
-            .withSupplyCurrentLimitEnable(true));
+        // Burst-then-fall-back: 20 A is allowed for accelerations, but sustained draw
+        // (pushing matches, stalls) drops to 15 A after 0.25 s. Window shortened 0.5 ->
+        // 0.25 s (2026-07-18): teleop is a stream of fresh transients that each re-arm
+        // the window, so a 0.5 s window meant the drives lived at full burst and the
+        // fold-back never engaged during a full-stick reversal (which also lasted 0.5 s).
+        // Values live in driveCurrentLimits() above so the low-battery cut reuses them.
+        .withCurrentLimits(driveCurrentLimits(1.0));
     private static final TalonFXConfiguration steerInitialConfigs = new TalonFXConfiguration()
         .withCurrentLimits(
             new CurrentLimitsConfigs()

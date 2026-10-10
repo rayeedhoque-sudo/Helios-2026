@@ -46,6 +46,9 @@ public class Robot extends TimedRobot {
 
     @Override
     public void autonomousInit() {
+        // Start spot from the companion Field tab wins over any pre-match vision seed (team
+        // 2026-09-30), and applies even with no auto selected. No pick = no reset.
+        m_robotContainer.drivetrain.resetToStartSpot();
         m_autonomousCommand = m_robotContainer.getAutonomousCommand();
 
         if (m_autonomousCommand != null) {
