@@ -39,7 +39,10 @@ public class TunerConstants {
     // When using closed-loop control, the drive motor uses the control
     // output type specified by SwerveModuleConstants.DriveMotorClosedLoopOutput
     private static final Slot0Configs driveGains = new Slot0Configs()
-        .withKP(0.01).withKI(0).withKD(0)
+        // kP 0.01 -> 0.1 (team 2026-10-12, CTRE's swerve template value): at 0.01 the closed loop did
+        // nothing, so each wheel ran at whatever its friction allowed (rot-calib2: FR 17% slow, BL 9%
+        // fast) and the wheels scrubbed. Volts per rps of motor speed error. TODO tune on robot.
+        .withKP(0.1).withKI(0).withKD(0)
         .withKS(0).withKV(0.1165);
 
     // The closed-loop output type to use for the steer motors;
@@ -67,7 +70,7 @@ public class TunerConstants {
 
     /**
      * Drive-motor current limits, scaled. scale = 1 is the normal set (stator = kSlipCurrent,
-     * supply 20 A burst folding to 15 A after 0.25 s -- see the history below); the drivetrain
+     * supply 16 A burst folding to 12 A after 0.25 s -- see the history below); the drivetrain
      * applies scale = DriveLimitConstants.LOW_BATTERY_LIMIT_SCALE while the battery is low.
      * Every field is set explicitly so re-applying it can never leave a stale value behind.
      */
@@ -75,8 +78,8 @@ public class TunerConstants {
         return new CurrentLimitsConfigs()
             .withStatorCurrentLimit(kSlipCurrent.times(scale))
             .withStatorCurrentLimitEnable(true)
-            .withSupplyCurrentLimit(Amps.of(20 * scale))
-            .withSupplyCurrentLowerLimit(Amps.of(15 * scale))
+            .withSupplyCurrentLimit(Amps.of(16 * scale))
+            .withSupplyCurrentLowerLimit(Amps.of(12 * scale))
             .withSupplyCurrentLowerTime(Seconds.of(0.25))
             .withSupplyCurrentLimitEnable(true);
     }
@@ -117,9 +120,11 @@ public class TunerConstants {
         // inherent to the request, not a bug. Speed was NOT changed -- a speed cap barely
         // affects current, because the draw comes from accelerating and pushing, not from
         // cruising. If the robot needs to be SLOWER as well, that is MaxSpeed in
-        // RobotContainer (currently 0.8 of kSpeedAt12Volts).
-        // Burst-then-fall-back: 20 A is allowed for accelerations, but sustained draw
-        // (pushing matches, stalls) drops to 15 A after 0.25 s. Window shortened 0.5 ->
+        // RobotContainer (currently 0.5184 of kSpeedAt12Volts).
+        // CUT 20% ON 2026-10-10 (team request): burst 20 -> 16 A, sustained 15 -> 12 A
+        // (16 x4 = 64 A burst, 12 x4 = 48 A sustained). Now 40% of the July 40 A burst.
+        // Burst-then-fall-back: 16 A is allowed for accelerations, but sustained draw
+        // (pushing matches, stalls) drops to 12 A after 0.25 s. Window shortened 0.5 ->
         // 0.25 s (2026-07-18): teleop is a stream of fresh transients that each re-arm
         // the window, so a 0.5 s window meant the drives lived at full burst and the
         // fold-back never engaged during a full-stick reversal (which also lasted 0.5 s).
@@ -151,9 +156,12 @@ public class TunerConstants {
                 // low-speed torque shortfall locked modules mid-swing on 2026-07-08. Taking it
                 // to 28 would walk straight back into a known failure for no draw benefit.
                 // Team-confirmed 2026-08-29 (supply-only cut chosen over cutting both).
+                // SUPPLY CUT 20% on 2026-10-10 (team request, alongside the drive cut):
+                // 21 -> 17 A (17 x4 = 68 A ceiling). Stator still 40 A for the reason above.
+                // If modules hesitate mid-swing, this is the first thing to step back up.
                 .withStatorCurrentLimit(Amps.of(40))
                 .withStatorCurrentLimitEnable(true)
-                .withSupplyCurrentLimit(Amps.of(21))
+                .withSupplyCurrentLimit(Amps.of(17))
                 .withSupplyCurrentLimitEnable(true)
         )
         // Brake so the wheels hold their commanded steer angle instead of coasting.
@@ -170,8 +178,15 @@ public class TunerConstants {
     // tuner-project.json (issue register #19); the old 4.93 was theoretical and unreachable,
     // so full-stick made the drive velocity loop saturate at 12 V chasing a speed it could
     // never hit -- burning current for zero extra speed and skewing odometry scale by ~3.5%.
-    // TODO confirm with an on-ground measured-distance run.
-    public static final LinearVelocity kSpeedAt12Volts = MetersPerSecond.of(4.76);
+    // Scaled by kOdometryScale (team 2026-10-10) so the real full-stick speed stays what the drivers had.
+    public static final LinearVelocity kSpeedAt12Volts = MetersPerSecond.of(4.76 * TunerConstants.kOdometryScale);
+
+    // ODOMETRY SCALE (team 2026-10-10): BLine calib2 (1 m by odometry) really drove 1 m + 4 in, so
+    // the wheels go 1.1016x farther than 2 in x 6.48:1 says. Applied to the EFFECTIVE wheel radius
+    // (the knob CTRE says to tune per robot; the cause may be the module ratio -- CAD says WCP X2,
+    // Tuner X says X3 10T). One run measured to the inch with a +/-3 cm end tolerance: TODO refine
+    // by pushing the robot 3 m disabled and comparing logged wheel distance to a tape measure.
+    public static final double kOdometryScale = (1.0 + 0.1016) / 1.0;
 
     // Every 1 rotation of the azimuth results in kCoupleRatio drive motor turns;
     // This may need to be tuned to your individual robot
@@ -179,7 +194,7 @@ public class TunerConstants {
 
     private static final double kDriveGearRatio = 6.48;
     private static final double kSteerGearRatio = 12.1;
-    private static final Distance kWheelRadius = Inches.of(2);
+    private static final Distance kWheelRadius = Inches.of(2 * kOdometryScale); // effective, see kOdometryScale
 
     // ROBOT FRONT REDEFINED = SHOOTER SIDE (2026-07-10, team request). The Tuner X project
     // was generated with the opposite side as front, so the chassis frame is rotated 180 deg

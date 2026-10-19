@@ -12,6 +12,8 @@ import edu.wpi.first.wpilibj2.command.CommandScheduler;
 
 public class Robot extends TimedRobot {
     private Command m_autonomousCommand;
+    private Command m_autoSliderCycle;
+    private Command m_autoUnjam;
 
     private final RobotContainer m_robotContainer;
 
@@ -51,9 +53,15 @@ public class Robot extends TimedRobot {
         m_robotContainer.drivetrain.resetToStartSpot();
         m_autonomousCommand = m_robotContainer.getAutonomousCommand();
 
+        // 1 s unjam at the start (team 2026-10-17) -- scheduled first so the auto wins any conflict.
+        m_autoUnjam = m_robotContainer.autoStartUnjam(m_autonomousCommand);
+        CommandScheduler.getInstance().schedule(m_autoUnjam);
         if (m_autonomousCommand != null) {
             CommandScheduler.getInstance().schedule(m_autonomousCommand);
         }
+        // Slider out and in twice beside the auto (team 2026-10-16) -- see RobotContainer.autoStartSliderCycle.
+        m_autoSliderCycle = m_robotContainer.autoStartSliderCycle(m_autonomousCommand);
+        CommandScheduler.getInstance().schedule(m_autoSliderCycle);
     }
 
     @Override
@@ -66,6 +74,12 @@ public class Robot extends TimedRobot {
     public void teleopInit() {
         if (m_autonomousCommand != null) {
             CommandScheduler.getInstance().cancel(m_autonomousCommand);
+        }
+        if (m_autoSliderCycle != null) {
+            CommandScheduler.getInstance().cancel(m_autoSliderCycle);
+        }
+        if (m_autoUnjam != null) {
+            CommandScheduler.getInstance().cancel(m_autoUnjam);
         }
     }
 

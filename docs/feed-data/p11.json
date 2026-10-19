@@ -1,0 +1,138 @@
+{
+  "point": "p11",
+  "when": "2026-10-17 13:24:12",
+  "samples": 150,
+  "alliance": "red",
+  "enabled_during": false,
+  "ll_mount_pose": [
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    -0.0
+  ],
+  "ll_pipeline": 0.0,
+  "tag_alias": {
+    "22": 28
+  },
+  "odom_pose": {
+    "x": 1.5346594333657515,
+    "y": 3.2532542457556697,
+    "heading_deg": -0.7329447318639072,
+    "valid_samples": 150
+  },
+  "launcher_mean": {
+    "Current Velocity": 0.0,
+    "Desired Velocity": 2000.0,
+    "Current Angle": 28.4765625,
+    "Desired Angle": 29.0
+  },
+  "tags": [
+    {
+      "id": 27,
+      "seen_frac": 0.49,
+      "txnc": -22.24595834486808,
+      "tync": 15.415334887515462,
+      "ta": 0.0019078259021426513,
+      "dist_cam_m": 1.9301961451859637,
+      "dist_sd_m": 0.020277994547476544,
+      "ambiguity": 0.0,
+      "ground_m": 1.8607559783236038,
+      "tag_field": [
+        4.2700194,
+        3.4312351999999997,
+        270.0
+      ],
+      "robot_from_tag": [
+        2.5388942886628394,
+        2.748872642582804
+      ]
+    },
+    {
+      "id": 18,
+      "seen_frac": 0.14,
+      "txnc": -19.375107077484717,
+      "tync": 9.81635148954563,
+      "ta": 0.0011311806350325544,
+      "dist_cam_m": 2.2851193920175525,
+      "dist_sd_m": 0.01759332414969586,
+      "ambiguity": 0.2518131797151863,
+      "ground_m": 2.2516636050499925,
+      "tag_field": [
+        4.6256194,
+        3.4312351999999997,
+        270.0
+      ],
+      "robot_from_tag": [
+        2.49209283796839,
+        2.71147593509797
+      ]
+    }
+  ],
+  "shot": {
+    "rpm": 2000,
+    "hood_deg": 28.5,
+    "landing": null,
+    "notes": "successful feed shot (team: 2000 rpm, hood 28.5 -- typed '28.5 rpm', read as deg) from the FAR (blue) zone. Tag 22 (as 28) NOT in view; the BLUE hub's -y face tags 27 (49%, 1.93 m) + 18 (14%, 2.29 m) are. 2-tag gyro-free (2.46, 2.91) hdg -6.0 spread 0.02; 3D tag 27 (2.61, 2.70) hdg 1.5 (mirror x 5.93 hdg 134 rejected). Pigeon now -0.7 (~correct: MENU re-zeroed since p10). Shot line passes ~0.6 m beside the blue hub's -y edge."
+  },
+  "mt1_camera_pose": {
+    "x": 2.902670644887776,
+    "y": 5.883999891326476,
+    "yaw_deg": -89.64279870485804,
+    "frames": 21
+  },
+  "tag_pose": {
+    "x": 2.4592965117469863,
+    "y": 2.9105181336694943,
+    "heading_deg": 354.0,
+    "spread_m": 0.024268117770151927,
+    "pigeon_minus_tag_deg": 5.267055268136119
+  },
+  "ll_fiducials_3d": [
+    {
+      "fID": 27,
+      "t6c_ts": [
+        -1.6615158145680813,
+        0.6933648742857417,
+        -0.7295069850916029,
+        172.08782180056164,
+        88.05387061683214,
+        151.34089960467907
+      ],
+      "t6t_cs": [
+        -0.7898911963051792,
+        -0.05627398101702271,
+        1.7738306653428413,
+        -95.4283682685746,
+        -69.17214418285346,
+        94.80756161982983
+      ],
+      "t6r_fs": [],
+      "tx_nocross": -22.248379911946472,
+      "ty_nocross": 15.030495234608551,
+      "cam_field": [
+        {
+          "x": 2.6085035854319187,
+          "y": 2.7017282149083974,
+          "heading_deg": 1.4560301325061005,
+          "on_field": true,
+          "mirrored": false
+        },
+        {
+          "x": 5.931535214568081,
+          "y": 2.7017282149083965,
+          "heading_deg": 134.0472100436009,
+          "on_field": true,
+          "mirrored": true
+        }
+      ]
+    }
+  ],
+  "est_pose": {
+    "x": 2.53,
+    "y": 2.8,
+    "heading_deg": -1.7,
+    "source": "mean of 2-tag solve, tag 27 3D, Pigeon heading"
+  }
+}

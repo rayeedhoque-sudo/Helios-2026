@@ -1,0 +1,69 @@
+{
+  "point": "p9",
+  "when": "2026-10-17 13:08:06",
+  "samples": 150,
+  "alliance": "red",
+  "enabled_during": false,
+  "ll_mount_pose": [
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    -0.0
+  ],
+  "ll_pipeline": 0.0,
+  "odom_pose": {
+    "x": 17.58131123954242,
+    "y": 3.410786142531806,
+    "heading_deg": -164.35515401592093,
+    "valid_samples": 150
+  },
+  "launcher_mean": {
+    "Current Velocity": 0.0,
+    "Desired Velocity": 1700.0,
+    "Current Angle": 28.037109375,
+    "Desired Angle": 29.0
+  },
+  "tags": [
+    {
+      "id": 6,
+      "seen_frac": 0.92,
+      "txnc": 13.320001565661356,
+      "tync": -7.43416313013235,
+      "ta": 0.0009879620511260262,
+      "dist_cam_m": 4.119955942378142,
+      "dist_sd_m": 0.02043973219021279,
+      "ambiguity": 0.8953477526077269,
+      "ground_m": 4.085324377820284,
+      "tag_field": [
+        11.8779798,
+        0.6444996,
+        180.0
+      ],
+      "robot_from_tag": [
+        15.959941544691358,
+        0.8102210134895509
+      ]
+    }
+  ],
+  "shot": {
+    "rpm": 1700,
+    "hood_deg": 28.0,
+    "landing": null,
+    "notes": "successful feed shot (team: 1700 rpm, hood 28). Tag 6 only, 4.12 m, amb 0.90. The capture's REST snapshot had no fiducial; 10 re-polls: the 3D solve flips frame to frame but the on-field side is steady at (7.88-7.99, 1.59-1.75) hdg -2.5..0.1 (other side y ~ -0.4, off field). Pigeon + the p3-p8 180-deg offset would say hdg ~15 / (7.79, 0.52) -- disagrees, so the Pigeon zero may have changed again; 3D used."
+  },
+  "mt1_camera_pose": {
+    "x": 15.345660280594338,
+    "y": -0.1893088243730866,
+    "yaw_deg": 131.41564959854426,
+    "frames": 138
+  },
+  "ll_fiducials_3d": [],
+  "est_pose": {
+    "x": 7.94,
+    "y": 1.67,
+    "heading_deg": -1.3,
+    "source": "10 LL REST polls of tag 6 t6c_ts, on-field side (mirror off-field)"
+  }
+}

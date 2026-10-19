@@ -4,6 +4,8 @@ import static edu.wpi.first.units.Units.*;
 
 import java.util.Optional;
 import java.util.Set;
+import java.util.function.BooleanSupplier;
+import java.util.function.DoubleSupplier;
 import java.util.function.Supplier;
 
 import com.ctre.phoenix6.Utils;
@@ -16,18 +18,23 @@ import com.pathplanner.lib.config.PIDConstants;
 import com.pathplanner.lib.config.RobotConfig;
 import com.pathplanner.lib.controllers.PPHolonomicDriveController;
 
+import edu.wpi.first.math.MathUtil;
 import edu.wpi.first.math.Matrix;
 import edu.wpi.first.math.VecBuilder;
 import edu.wpi.first.math.controller.PIDController;
 import edu.wpi.first.math.filter.Debouncer;
 import edu.wpi.first.math.geometry.Pose2d;
+import edu.wpi.first.math.geometry.Pose3d;
 import edu.wpi.first.math.geometry.Rotation2d;
+import edu.wpi.first.math.geometry.Transform2d;
+import edu.wpi.first.math.kinematics.ChassisSpeeds;
 import edu.wpi.first.math.geometry.Translation2d;
 import edu.wpi.first.math.numbers.N1;
 import edu.wpi.first.math.numbers.N3;
 import edu.wpi.first.networktables.BooleanPublisher;
 import edu.wpi.first.networktables.DoublePublisher;
 import edu.wpi.first.networktables.NetworkTableInstance;
+import edu.wpi.first.networktables.StringPublisher;
 import edu.wpi.first.networktables.StringSubscriber;
 import edu.wpi.first.wpilibj.DriverStation;
 import edu.wpi.first.wpilibj.DriverStation.Alliance;
@@ -43,11 +50,11 @@ import frc.robot.Constants.SubsystemConstants.AutoAimConstants;
 import frc.robot.Constants.SubsystemConstants.Vision;
 import frc.robot.Constants.TunerConstants.TunerSwerveDrivetrain;
 import frc.robot.subsystems.utility.LimelightHelpers;
-import frc.robot.subsystems.utility.ShotCalculator;
 import frc.robot.util.Tunable;
 import frc.robot.lib.BLine.FollowPath;
 import frc.robot.lib.BLine.Path;
 import frc.robot.subsystems.utility.LimelightHelpers.PoseEstimate;
+import frc.robot.subsystems.utility.LimelightHelpers.RawFiducial;
 
 /**
  * Class that extends the Phoenix 6 SwerveDrivetrain class and implements
@@ -76,16 +83,84 @@ public class CommandSwerveDrivetrain extends TunerSwerveDrivetrain implements Su
     /* Robot-relative speeds request used by PathPlanner's AutoBuilder output. */
     private final SwerveRequest.ApplyRobotSpeeds m_applyRobotSpeeds = new SwerveRequest.ApplyRobotSpeeds();
 
-    /* BLine path following (added 2026-10-09). Gains = BLine README starting values. TODO tune on robot. */
-    private static final double kBLineTranslationP = 5.0; // (m/s) per m of path distance remaining
-    private static final double kBLineRotationP = 3.0;    // (rad/s) per rad of heading error
-    private static final double kBLineCrossTrackP = 2.0;  // (m/s) per m off the segment line
-    /* A BLine path only runs if the picked start spot is within this of the path's first point (m). */
-    static final double kBLineStartToleranceMeters = 0.5;
+    /* BLine path following (added 2026-10-09). Gains = BLine docs first-path tutorial values (softer
+       than the README's 5/3/2, team 2026-10-10). TODO tune on robot. */
+    private static final double kBLineTranslationP = 2.0; // (m/s) per m of path distance remaining
+    // 5 (team 2026-10-12): at 1 rot-calib2 lagged ~20 deg all path and stalled 12 deg short at the end
+    // (0.2 rad/s commanded is under drive static friction). 5 = PathPlanner rotation P and RT HEADING_kP.
+    private static final double kBLineRotationP = 5.0;    // (rad/s) per rad of heading error
+    private static final double kBLineCrossTrackP = 0.2;  // (m/s) per m off the segment line
+    // Static-friction floors (team 2026-10-12): drive kS is 0, so P alone stalled rot-calib2 at
+    // 0.08 m/s / 0.22 rad/s, just outside the 3 cm / 2 deg end tolerance, and the path never
+    // finished. BLine never commands less than these while outside the tolerance. Set here, not in
+    // the path files (team: autos stay as authored). TODO tune on robot.
+    private static final double kBLineMinSpeedMps = 0.15;
+    private static final double kBLineMinTurnDegPerSec = 20.0;
+    // Turning-while-driving distance loss (team 2026-10-12): straight paths land right, but paths that
+    // rotate on the way fall short of what odometry counts -- rot-calib (1 m) 3 in short at 0.989 m
+    // counted (0.934), rot-calib2 (2 m) 9 in short at 1.995 m (0.888). While the robot turns faster
+    // than kBLineTurningRadPerSec, BLine counts only this fraction of each bit of travel, so it drives
+    // farther; straight motion counts 1:1. Relative "BLine:" autos only. TODO tune on robot.
+    // 0.91 -> 0.95 (team 2026-10-14): at 0.91 rot-calib landed 1.75 in PAST the 1 m line;
+    // travel scales ~1/factor, so 0.91 x (1 m + 1.75 in) / 1 m = 0.95.
+    // 0.95 -> 0.82 (team 2026-10-14): 3 runs at 0.95 all landed 5-6 in short (counted 1.04 m):
+    // 0.95 x 0.86 m / 1 m = 0.82. Only below kBLineTurningMaxSpeedMps (team): it is calibrated on
+    // 0.5 m/s runs, so faster turning legs (path 1 part 2) count 1:1 as before the factor existed.
+    // 0.82 -> 0.92 (team 2026-10-14): with the steer stall window fixed, 3 runs finished the full turn
+    // (89-91 deg) consistently ~5 in PAST the 1 m line: 0.82 x (1 m + 5 in) / 1 m = 0.92.
+    // 0.92 -> 0.90 (team 2026-10-14): consistently 1 in SHORT at 0.92: 0.92 x (1 m - 1 in) / 1 m = 0.90.
+    // 0.90 -> 0.88 (team 2026-10-14): still ~1 in short at 0.90 (5 runs, all full turns): x 0.9746 again.
+    static final double kBLineTurningDistanceFactor = 0.88;
+    static final double kBLineTurningRadPerSec = 0.1; // ~6 deg/s; straight-path heading holds stay under
+    static final double kBLineTurningMaxSpeedMps = 1.0;
     /* Own request so PathPlanner's wheel-force feedforwards (left on m_applyRobotSpeeds) never leak into BLine. */
-    private final SwerveRequest.ApplyRobotSpeeds m_blineRobotSpeeds = new SwerveRequest.ApplyRobotSpeeds();
-    /* Flips paths for red. No per-path pose reset: autonomousInit already reset to the start spot. */
+    /* Closed-loop wheel speeds (team 2026-10-12): open-loop let front-right run 17% slow and back-left 9%
+       fast on rot-calib2, so the wheels slipped against each other and the robot fell short of odometry. */
+    private final SwerveRequest.ApplyRobotSpeeds m_blineRobotSpeeds = new SwerveRequest.ApplyRobotSpeeds()
+        .withDriveRequestType(DriveRequestType.Velocity); // same closed-loop drive as the default drive
+    /* RELATIVE BLine (team 2026-10-10): paths run relative to wherever the robot is when they
+       start -- BLine sees the path start plus the wheel/gyro motion since then, never the field
+       pose, so nothing drives it toward the authored field spot and the real pose is never reset.
+       No red flip (the motion is robot-relative either way). Vision fusion pauses while a path
+       runs so a tag can't drag the pose mid-path. T-ratio handoffs (BLine docs' recommended
+       default): a middle waypoint also counts as passed once the robot is far enough along. */
+    private Pose2d m_blineSeen = Pose2d.kZero;      // where BLine thinks the robot is (path frame)
+    private Pose2d m_blineLastOdom = Pose2d.kZero;  // real pose at the previous blineRelativePose call
+    private boolean m_blineRunning = false;          // pauses vision fusion while true
     private final FollowPath.Builder m_blineBuilder = new FollowPath.Builder(
+        this,
+        this::blineRelativePose,
+        () -> this.getState().Speeds, // robot-relative
+        speeds -> this.setControl(m_blineRobotSpeeds.withSpeeds(speeds)),
+        new PIDController(kBLineTranslationP, 0.0, 0.0),
+        new PIDController(kBLineRotationP, 0.0, 0.0),
+        new PIDController(kBLineCrossTrackP, 0.0, 0.0)
+    ).withTRatioBasedTranslationHandoffs(true);
+    /* FIELD BLine (team 2026-10-10, Shooting auton): the REAL field pose, flipped for red, reset to
+       the (flipped) path start as the path starts -- the robot must be placed there. Vision fusion
+       still pauses while it drives (m_blineRunning). The translation speed sent to the wheels is
+       capped by m_blineFieldMaxSpeed (m/s), so an auto can slow one stretch without editing the
+       path. Own PIDs: never shares controller state with the relative builder. */
+    private DoubleSupplier m_blineFieldMaxSpeed = () -> Double.POSITIVE_INFINITY;
+    private final FollowPath.Builder m_blineFieldBuilder = new FollowPath.Builder(
+        this,
+        () -> this.getState().Pose,
+        () -> this.getState().Speeds, // robot-relative
+        speeds -> this.setControl(m_blineRobotSpeeds.withSpeeds(
+            capTranslation(speeds, m_blineFieldMaxSpeed.getAsDouble()))),
+        new PIDController(kBLineTranslationP, 0.0, 0.0),
+        new PIDController(kBLineRotationP, 0.0, 0.0),
+        new PIDController(kBLineCrossTrackP, 0.0, 0.0)
+    ).withDefaultShouldFlip()
+     .withPoseReset(this::resetPose)
+     .withTRatioBasedTranslationHandoffs(true);
+    /* VISION BLine (team 2026-10-17, "BLine: path 1 + vision"): the REAL field pose, flipped for red, with
+       MegaTag2 X/Y fused while it drives (m_visionAuto, see visionAutoReject). No pose reset per path:
+       the auto resets once at its first path, and later parts carry on from the fused pose. */
+    private boolean m_visionAuto = false; // vision-auto trust + fusion through BLine paths while true
+    private Set<Integer> m_visionAutoFarTags = Set.of(); // tags with the longer cap (path 1 + vision step 3)
+    private boolean m_visionAutoRedSideOnly = false; // path 1 + vision on red: frames with only tags 1-16 fuse
+    private final FollowPath.Builder m_blineVisionBuilder = new FollowPath.Builder(
         this,
         () -> this.getState().Pose,
         () -> this.getState().Speeds, // robot-relative
@@ -93,7 +168,29 @@ public class CommandSwerveDrivetrain extends TunerSwerveDrivetrain implements Su
         new PIDController(kBLineTranslationP, 0.0, 0.0),
         new PIDController(kBLineRotationP, 0.0, 0.0),
         new PIDController(kBLineCrossTrackP, 0.0, 0.0)
-    ).withDefaultShouldFlip();
+    ).withDefaultShouldFlip()
+     .withTRatioBasedTranslationHandoffs(true);
+    // Why the last vision-auto frame was or wasn't fused ("fused", or the gate that dropped it).
+    private final StringPublisher m_visionAutoGatePub = NetworkTableInstance.getDefault()
+        .getTable("Vision").getStringTopic("AutoGate").publish();
+    /* BLINE AIM (team 2026-10-16, path 1's auto-aims): while a BLine path runs and m_blineAim has a
+       blue-origin heading, BLine's own rotation is replaced (its built-in override) by a heading servo
+       to it -- the same gains and rate cap as faceHeading. BLine only finishes a path once the heading
+       is on the path's last rotation, so while aiming a relative path finishes on position alone. */
+    private Supplier<Optional<Rotation2d>> m_blineAim = Optional::empty;
+    private DoubleSupplier m_blineAimFeedforward = () -> 0.0; // rad/s
+    private DoubleSupplier m_blineAimMaxRate = () -> AutoAimConstants.MAX_ROTATION_RAD_PER_SEC; // rad/s
+    private boolean m_blineAiming = false;
+    private boolean m_blineOnLastTarget = false, m_blineAtEnd = false; // BLine's own finish checks
+    private final PIDController m_blineAimPid = new PIDController(
+        AutoAimConstants.HEADING_kP, AutoAimConstants.HEADING_kI, AutoAimConstants.HEADING_kD);
+    {
+        m_blineAimPid.enableContinuousInput(-Math.PI, Math.PI); // short way round
+        FollowPath.setBooleanLoggingConsumer(p -> {
+            if (p.getFirst().equals("FollowPath/finishedIsLastTranslationElement")) m_blineOnLastTarget = p.getSecond();
+            if (p.getFirst().equals("FollowPath/finishedTranslationAtSetpoint")) m_blineAtEnd = p.getSecond();
+        });
+    }
 
     /**
      * Constructs a CTRE SwerveDrivetrain using the specified constants.
@@ -233,6 +330,20 @@ public class CommandSwerveDrivetrain extends TunerSwerveDrivetrain implements Su
         return run(() -> this.setControl(request.get()));
     }
 
+    /**
+     * KILL SWITCH for the drivetrain (team request 2026-10-16), same shape as INTAKE_ENABLED /
+     * HOPPER_ENABLED. false = no drive or steer motor is ever driven: every request (sticks, aims,
+     * autos, SysId) is swapped for Idle here, the one place they all go through, so the wheels sit
+     * in brake like a disabled robot. Odometry, vision and the gyro still run.
+     */
+    static final boolean DRIVE_ENABLED = true;
+    private static final SwerveRequest.Idle kDriveKilled = new SwerveRequest.Idle();
+
+    @Override
+    public void setControl(SwerveRequest request) {
+        super.setControl(DRIVE_ENABLED ? request : kDriveKilled);
+    }
+
     // RB shoot-on-the-move heading servo, reused every loop (see faceHeading).
     private final SwerveRequest.FieldCentricFacingAngle m_faceHeading = new SwerveRequest.FieldCentricFacingAngle()
         .withDriveRequestType(DriveRequestType.Velocity) // same closed-loop drive as the default drive
@@ -252,7 +363,15 @@ public class CommandSwerveDrivetrain extends TunerSwerveDrivetrain implements Su
      */
     public SwerveRequest faceHeading(double vxMetersPerSec, double vyMetersPerSec,
             Rotation2d blueHeading, double rateFeedforwardRadPerSec) {
+        return faceHeading(vxMetersPerSec, vyMetersPerSec, blueHeading, rateFeedforwardRadPerSec,
+            AutoAimConstants.MAX_ROTATION_RAD_PER_SEC);
+    }
+
+    /** faceHeading with its own turn-rate cap (rad/s) -- LB's gentler feed turn. Every call sets the cap. */
+    public SwerveRequest faceHeading(double vxMetersPerSec, double vyMetersPerSec,
+            Rotation2d blueHeading, double rateFeedforwardRadPerSec, double maxRotationRadPerSec) {
         return m_faceHeading
+            .withMaxAbsRotationalRate(maxRotationRadPerSec)
             .withVelocityX(vxMetersPerSec)
             .withVelocityY(vyMetersPerSec)
             .withTargetDirection(blueHeading.minus(getOperatorForwardDirection()))
@@ -297,6 +416,7 @@ public class CommandSwerveDrivetrain extends TunerSwerveDrivetrain implements Su
     @Override
     public void periodic() {
         updateLowBatteryDriveCut();
+        updateBLineAim();
         /*
          * Periodically try to apply the operator perspective.
          * If we haven't applied the operator perspective before, then we should apply it regardless of DS state.
@@ -305,21 +425,14 @@ public class CommandSwerveDrivetrain extends TunerSwerveDrivetrain implements Su
          * This ensures driving behavior doesn't change until an explicit disable event occurs during testing.
          */
         if (!m_hasAppliedOperatorPerspective || DriverStation.isDisabled()) {
-            // Test-tag practice: "forward" = facing the test tag, the way facing tag 26 is
-            // forward from the blue wall -- so MENU pressed facing the tag sets the true heading.
-            if (ShotCalculator.practiceTestTag()) {
-                setOperatorPerspectiveForward(Rotation2d.fromDegrees(AutoAimConstants.TEST_TAG_FACING_DEG));
+            DriverStation.getAlliance().ifPresent(allianceColor -> {
+                setOperatorPerspectiveForward(
+                    allianceColor == Alliance.Red
+                        ? kRedAlliancePerspectiveRotation
+                        : kBlueAlliancePerspectiveRotation
+                );
                 m_hasAppliedOperatorPerspective = true;
-            } else {
-                DriverStation.getAlliance().ifPresent(allianceColor -> {
-                    setOperatorPerspectiveForward(
-                        allianceColor == Alliance.Red
-                            ? kRedAlliancePerspectiveRotation
-                            : kBlueAlliancePerspectiveRotation
-                    );
-                    m_hasAppliedOperatorPerspective = true;
-                });
-            }
+            });
         }
         // First enable after boot latches the vision boot-seed off for good (see field doc).
         if (DriverStation.isEnabled()) {
@@ -392,7 +505,15 @@ public class CommandSwerveDrivetrain extends TunerSwerveDrivetrain implements Su
         }
 
         // ---- Layer 2: MegaTag2 X/Y fusion ----
+        if (m_blineRunning && !m_visionAuto) {
+            visionTagCountPub.set(0); // paused: a relative BLine path is running
+            return;
+        }
         PoseEstimate mt2 = LimelightHelpers.getBotPoseEstimate_wpiBlue_MegaTag2(Vision.CAM_LIMELIGHT);
+        if (m_visionAuto) {
+            fuseVisionAuto(mt2);
+            return;
+        }
         if (mt2 == null || mt2.tagCount == 0) {
             visionTagCountPub.set(0); // no Limelight data / no tags in view
             return;
@@ -404,6 +525,116 @@ public class CommandSwerveDrivetrain extends TunerSwerveDrivetrain implements Su
         // Trust MegaTag2 X/Y, never its yaw (huge theta std dev) -- the Pigeon owns heading.
         this.addVisionMeasurement(mt2.pose, mt2.timestampSeconds, VecBuilder.fill(0.7, 0.7, 9999999));
         visionTagCountPub.set(mt2.tagCount);
+    }
+
+    /** Vision-auto fusion of one MegaTag2 frame: gated + weighted per Vision.VISION_AUTO_*, X/Y only (Pigeon owns heading). */
+    private void fuseVisionAuto(PoseEstimate mt2) {
+        int tags = mt2 == null ? 0 : mt2.tagCount;
+        // How far the solve sits from odometry at the frame's own timestamp (motion during latency excluded).
+        double jump = tags == 0 ? 0 : samplePoseAt(mt2.timestampSeconds)
+            .map(then -> then.getTranslation().getDistance(mt2.pose.getTranslation()))
+            .orElse(Double.POSITIVE_INFINITY);
+        // Gate on the NEAREST tag, not the average (team 2026-10-17, trench): under the blue trench the hub's
+        // +y tags 21/24 sit ~2.4 m away while wall tags 31/32 (~5.3 m) share the frame and push the average
+        // past the cap -- the average threw out the frames the trench pass needs most. Far tags still cut trust.
+        double nearest = tags == 0 ? 0 : nearestTagDist(mt2, m_visionAutoFarTags);
+        String reject = m_visionAutoRedSideOnly && tags > 0 && !allRedSideTags(mt2.rawFiducials) ? "non-red-side tag"
+            : visionAutoReject(limelightMountSet(), tags, nearest, jump,
+                this.getPigeon2().getAngularVelocityZDevice().getValueAsDouble());
+        m_visionAutoGatePub.set(reject == null ? "fused" : reject);
+        if (reject != null) {
+            visionTagCountPub.set(0);
+            return;
+        }
+        double sd = visionAutoStdDev(tags, mt2.avgTagDist);
+        this.addVisionMeasurement(mt2.pose, mt2.timestampSeconds, VecBuilder.fill(sd, sd, 9999999));
+        visionTagCountPub.set(tags);
+    }
+
+    /**
+     * Distance (m) from the camera to the closest tag in the frame; the average if no per-tag data came with it.
+     * A farTags tag counts as distance x (3.3 / 4.5), so the 3.3 m gate lets it through out to 4.5 m.
+     */
+    private static double nearestTagDist(PoseEstimate mt2, Set<Integer> farTags) {
+        double nearest = Double.POSITIVE_INFINITY;
+        for (var tag : mt2.rawFiducials) {
+            if (tag != null) { // null slots when the Limelight's array was short
+                nearest = Math.min(nearest, gateTagDist(tag.id, tag.distToCamera, farTags));
+            }
+        }
+        return Double.isInfinite(nearest) ? mt2.avgTagDist : nearest;
+    }
+
+    /** One tag's distance as the vision-auto gate sees it: farTags are scaled to their longer cap. */
+    static double gateTagDist(int id, double distM, Set<Integer> farTags) {
+        return farTags.contains(id)
+            ? distM * Vision.VISION_AUTO_MAX_TAG_DIST_METERS / Vision.VISION_AUTO_FAR_TAG_MAX_DIST_METERS
+            : distM;
+    }
+
+    /**
+     * Path 1 + vision step 3 (team 2026-10-17): on = the OPPONENT's hub + trench tags count out to
+     * VISION_AUTO_FAR_TAG_MAX_DIST_METERS (red tags on blue; blue tags on red, where the path mirrors).
+     * Cleared by setVisionAuto(false).
+     */
+    public void setVisionAutoFarTags(boolean on) {
+        boolean red = DriverStation.getAlliance().orElse(DriverStation.Alliance.Blue) == DriverStation.Alliance.Red;
+        m_visionAutoFarTags = !on ? Set.of() : red ? Vision.BLUE_HUB_TRENCH_TAGS : Vision.RED_HUB_TRENCH_TAGS;
+    }
+
+    /**
+     * Path 1 + vision on RED (team 2026-10-17): only tags on the red side of the field (IDs 1-16) may
+     * place the robot. MegaTag2 solves the frame from every tag in it, so a frame that also holds a
+     * blue-side tag (17-32) is dropped whole. Off on blue. Cleared by setVisionAuto(false).
+     */
+    public void setVisionAutoRedSideOnly(boolean on) {
+        m_visionAutoRedSideOnly = on
+            && DriverStation.getAlliance().orElse(DriverStation.Alliance.Blue) == DriverStation.Alliance.Red;
+    }
+
+    /** True when every tag in the frame is a red-side tag (ID 1-16). Null slots are skipped. */
+    static boolean allRedSideTags(RawFiducial[] fiducials) {
+        if (fiducials == null) return false; // no per-tag data: can't prove it, don't fuse
+        boolean any = false;
+        for (RawFiducial f : fiducials) {
+            if (f == null) continue;
+            if (f.id < 1 || f.id > 16) return false;
+            any = true;
+        }
+        return any;
+    }
+
+    /** Why a vision-auto frame is dropped, or null to fuse it. */
+    static String visionAutoReject(boolean mountSet, int tagCount, double nearestTagDistM, double jumpM, double yawRateDegPerSec) {
+        if (!mountSet) return "mount pose unset";
+        if (tagCount == 0) return "no tags";
+        if (nearestTagDistM > Vision.VISION_AUTO_MAX_TAG_DIST_METERS) return "tags too far";
+        if (Math.abs(yawRateDegPerSec) > Vision.VISION_AUTO_MAX_YAW_RATE_DEG_PER_SEC) return "turning";
+        if (jumpM > Vision.VISION_AUTO_MAX_JUMP_METERS) return "jump";
+        return null;
+    }
+
+    /** Vision-auto X/Y std dev (m): less trust farther out, more with 2+ tags. */
+    static double visionAutoStdDev(int tagCount, double avgTagDistM) {
+        double base = tagCount >= 2 ? Vision.VISION_AUTO_STDDEV_MULTI_TAG_METERS : Vision.VISION_AUTO_STDDEV_ONE_TAG_METERS;
+        double r = avgTagDistM / Vision.VISION_AUTO_MAX_TAG_DIST_METERS;
+        return base * (1 + r * r);
+    }
+
+    /** True once the Limelight reports a non-zero camera mount pose (set in its web UI). */
+    private static boolean limelightMountSet() {
+        Pose3d mount = LimelightHelpers.getCameraPose3d_RobotSpace(Vision.CAM_LIMELIGHT);
+        return mount.getTranslation().getNorm() > 1e-3 || mount.getRotation().getAngle() > 1e-3;
+    }
+
+    /** Vision-auto mode on/off (the vision auto's start/end); warns once if the mount pose is unset. */
+    public void setVisionAuto(boolean on) {
+        m_visionAuto = on;
+        m_visionAutoFarTags = Set.of();
+        m_visionAutoRedSideOnly = false;
+        if (on && !limelightMountSet()) {
+            DriverStation.reportWarning("Vision auto: Limelight mount pose is unset (all zeros) -- vision OFF, odometry only", false);
+        }
     }
 
     /** Rejects botpose solves that land outside the field -- a garbage solve can't seed. */
@@ -436,6 +667,7 @@ public class CommandSwerveDrivetrain extends TunerSwerveDrivetrain implements Su
      */
     @Override
     public void addVisionMeasurement(Pose2d visionRobotPoseMeters, double timestampSeconds) {
+        if (!isFinitePose(visionRobotPoseMeters)) return; // a NaN solve would poison the pose for good
         super.addVisionMeasurement(visionRobotPoseMeters, Utils.fpgaToCurrentTime(timestampSeconds));
     }
 
@@ -458,7 +690,16 @@ public class CommandSwerveDrivetrain extends TunerSwerveDrivetrain implements Su
         double timestampSeconds,
         Matrix<N3, N1> visionMeasurementStdDevs
     ) {
+        // 2026-10-17: the LL4's internal IMU read NaN, MegaTag2 came back NaN, and fusing it left the
+        // pose NaN for the rest of the run (only a pre-enable MT1 seed or an auto pose reset recovers).
+        if (!isFinitePose(visionRobotPoseMeters)) return;
         super.addVisionMeasurement(visionRobotPoseMeters, Utils.fpgaToCurrentTime(timestampSeconds), visionMeasurementStdDevs);
+    }
+
+    /** True if x, y and heading are all real numbers (a NaN / infinite vision solve is never fused). */
+    static boolean isFinitePose(Pose2d pose) {
+        return Double.isFinite(pose.getX()) && Double.isFinite(pose.getY())
+            && Double.isFinite(pose.getRotation().getRadians());
     }
 
     /**
@@ -498,45 +739,180 @@ public class CommandSwerveDrivetrain extends TunerSwerveDrivetrain implements Su
             this.getState().Pose.getRotation()))));
     }
 
+    /** Where BLine thinks the robot is: the path start moved by the robot's motion since the path began. */
+    Pose2d blineRelativePose() {
+        var state = this.getState();
+        m_blineSeen = stepRelative(m_blineSeen, m_blineLastOdom, state.Pose, state.Speeds.omegaRadiansPerSecond,
+            Math.hypot(state.Speeds.vxMetersPerSecond, state.Speeds.vyMetersPerSecond));
+        m_blineLastOdom = state.Pose;
+        return m_blineSeen;
+    }
+
+    /** seen moved by the robot's motion from last to now; travel counts kBLineTurningDistanceFactor while turning slowly. */
+    static Pose2d stepRelative(Pose2d seen, Pose2d last, Pose2d now, double omegaRadPerSec, double speedMps) {
+        Transform2d moved = new Transform2d(last, now);
+        boolean slowTurn = Math.abs(omegaRadPerSec) > kBLineTurningRadPerSec && speedMps < kBLineTurningMaxSpeedMps;
+        double k = slowTurn ? kBLineTurningDistanceFactor : 1.0;
+        return seen.plus(new Transform2d(moved.getTranslation().times(k), moved.getRotation()));
+    }
+
     /**
-     * Follow a BLine path (blue-origin field coordinates, flipped for red). Refuses to move
-     * (DS error, does nothing) unless the companion start spot is within
-     * kBLineStartToleranceMeters of the path's first point -- a missing or wrong pick would
-     * otherwise send the robot across the field toward absolute path points.
+     * Follow a BLine path RELATIVE to where the robot is now (see m_blineBuilder): the robot acts
+     * as if it is sitting at the path's first point and heading, and the field pose is left
+     * alone. Aborts on a debounced drive/steer stall, the same stall check as driveForwardAuto
+     * (BLine itself would push forever when blocked); FollowPath.end then stops the wheels.
      */
     public Command followBLinePath(Path path) {
+        return followBLinePath(path, false);
+    }
+
+    /**
+     * keepFrame = true chains this path onto the previous relative path (team 2026-10-14): BLine
+     * carries on from where that path left it instead of restarting at this path's first point.
+     * Between the two paths only the turn carries over (an aim turns the robot in place there); the
+     * X/Y between them is dropped, since vision runs there and can shift the pose.
+     */
+    public Command followBLinePath(Path path, boolean keepFrame) {
         return Commands.defer(() -> {
-            boolean red = DriverStation.getAlliance().orElse(Alliance.Blue) == Alliance.Red;
-            if (!startSpotMatchesPath(path, red, autoStartPose())) {
-                DriverStation.reportError(
-                    "BLine path NOT run: companion start spot missing or not at the path start", false);
-                return Commands.none();
-            }
-            return m_blineBuilder.build(path);
-        }, Set.of(this));
+            Pose2d now = this.getState().Pose;
+            m_blineSeen = keepFrame ? carryTurn(m_blineSeen, m_blineLastOdom, now) : path.getStartPose();
+            m_blineLastOdom = now;
+            m_blineOnLastTarget = false; // never a stale finish from the previous path
+            m_blineAtEnd = false;
+            m_blineRunning = true;
+            return withBLineStallAbort(m_blineBuilder.build(withFrictionFloors(path))
+                .until(() -> m_blineAiming && m_blineOnLastTarget && m_blineAtEnd));
+        }, Set.of(this)).finallyDo(() -> m_blineRunning = false);
     }
 
-    /** Name of the companion start spot this path begins at (blue side), or null if none matches. */
-    public static String startSpotFor(Path path) {
-        for (FieldConstants.StartSpot spot : FieldConstants.StartSpot.values()) {
-            if (startSpotMatchesPath(path, false, Optional.of(spot.bluePose))) {
-                return spot.name();
-            }
-        }
-        return null;
+    /** seen turned by the robot's heading change from last to now; its X/Y kept. */
+    static Pose2d carryTurn(Pose2d seen, Pose2d last, Pose2d now) {
+        return new Pose2d(seen.getTranslation(), seen.getRotation().plus(now.getRotation().minus(last.getRotation())));
     }
 
-    /** Pure check: is the start spot within tolerance of the path's (alliance-flipped) first point? */
-    static boolean startSpotMatchesPath(Path path, boolean red, Optional<Pose2d> startSpot) {
-        if (startSpot.isEmpty() || !path.isValid()) {
-            return false;
+    /**
+     * Aim BLine paths at this blue-origin heading (empty = the path's own rotation), plus a rate
+     * feedforward and a turn-rate cap (rad/s; LB's feed aim turns gentler than the hub aim).
+     */
+    public void setBLineAim(Supplier<Optional<Rotation2d>> heading, DoubleSupplier rateFeedforwardRadPerSec,
+            DoubleSupplier maxRotationRadPerSec) {
+        m_blineAim = heading;
+        m_blineAimFeedforward = rateFeedforwardRadPerSec;
+        m_blineAimMaxRate = maxRotationRadPerSec;
+    }
+
+    /** Every loop, before commands run: hand BLine the aim servo while a path runs and an aim is set. */
+    private void updateBLineAim() {
+        m_blineAiming = m_blineRunning && m_blineAim.get().isPresent();
+        if (m_blineAiming) {
+            FollowPath.overrideRotation(() -> {
+                Rotation2d heading = this.getState().Pose.getRotation();
+                return aimOmega(m_blineAimPid, heading, m_blineAim.get().orElse(heading),
+                    m_blineAimFeedforward.getAsDouble(), m_blineAimMaxRate.getAsDouble());
+            });
+        } else {
+            FollowPath.clearRotationOverride();
         }
-        Path p = path.copy();
-        if (red) {
-            p.flip();
+    }
+
+    /** Heading servo (rad/s): PID on the heading error plus feedforward, capped like faceHeading. */
+    static double aimOmega(PIDController pid, Rotation2d heading, Rotation2d target, double feedforwardRadPerSec) {
+        return aimOmega(pid, heading, target, feedforwardRadPerSec, AutoAimConstants.MAX_ROTATION_RAD_PER_SEC);
+    }
+
+    /** aimOmega with its own turn-rate cap (rad/s). */
+    static double aimOmega(PIDController pid, Rotation2d heading, Rotation2d target, double feedforwardRadPerSec,
+            double maxRotationRadPerSec) {
+        return MathUtil.clamp(pid.calculate(heading.getRadians(), target.getRadians()) + feedforwardRadPerSec,
+            -maxRotationRadPerSec, maxRotationRadPerSec);
+    }
+
+
+    /** A copy of the path with the static-friction floors applied to the whole path (file untouched). */
+    static Path withFrictionFloors(Path path) {
+        Path floored = path.copy();
+        floored.setPathConstraints(path.getPathConstraints()
+            .setMinVelocityMetersPerSec(kBLineMinSpeedMps)
+            .setMinVelocityDegPerSec(kBLineMinTurnDegPerSec));
+        return floored;
+    }
+
+    // Why each BLine path ended + the peak motor currents during it (team 2026-10-14: rot-calib lands
+    // inconsistently -- tells a stall abort, which ends the path early, from a normal finish).
+    private final StringPublisher m_blineEndPub = NetworkTableInstance.getDefault()
+        .getTable("BLine").getStringTopic("EndReason").publish();
+    private final DoublePublisher m_blinePeakDrivePub = NetworkTableInstance.getDefault()
+        .getTable("BLine").getDoubleTopic("PeakDriveAmps").publish();
+    private final DoublePublisher m_blinePeakSteerPub = NetworkTableInstance.getDefault()
+        .getTable("BLine").getDoubleTopic("PeakSteerAmps").publish();
+    private double m_peakDriveAmps = 0, m_peakSteerAmps = 0;
+    private String m_stallWhy = "";
+
+    /** Ends follow on a debounced drive/steer stall and publishes why the path ended. */
+    private Command withBLineStallAbort(Command follow) {
+        BooleanSupplier stallCheck = newStallCheck();
+        boolean[] stalled = {false};
+        m_peakDriveAmps = 0;
+        m_peakSteerAmps = 0;
+        m_blineEndPub.set("running");
+        return follow.until(() -> stalled[0] = stallCheck.getAsBoolean())
+            .finallyDo(interrupted -> m_blineEndPub.set(
+                stalled[0] ? "stall: " + m_stallWhy : interrupted ? "interrupted" : "finished"));
+    }
+
+    /** Scale the translation down (direction kept) so its speed is at most maxMps; rotation untouched. */
+    static ChassisSpeeds capTranslation(ChassisSpeeds speeds, double maxMps) {
+        double v = Math.hypot(speeds.vxMetersPerSecond, speeds.vyMetersPerSecond);
+        if (v <= maxMps) {
+            return speeds;
         }
-        return p.getStartPose().getTranslation().getDistance(startSpot.get().getTranslation())
-            <= kBLineStartToleranceMeters;
+        double k = maxMps / v;
+        return new ChassisSpeeds(speeds.vxMetersPerSecond * k, speeds.vyMetersPerSecond * k,
+            speeds.omegaRadiansPerSecond);
+    }
+
+    /**
+     * Follow a BLine path on the REAL field (see m_blineFieldBuilder): pose reset to the path
+     * start (flipped for red), vision paused while driving, translation capped at maxSpeedMps.
+     * Same stall abort as followBLinePath.
+     */
+    public Command followBLinePathOnField(Path path, DoubleSupplier maxSpeedMps) {
+        return Commands.defer(() -> {
+            m_blineFieldMaxSpeed = maxSpeedMps;
+            m_blineRunning = true;
+            return withBLineStallAbort(m_blineFieldBuilder.build(withFrictionFloors(path)));
+        }, Set.of(this)).finallyDo(() -> m_blineRunning = false);
+    }
+
+    /**
+     * Follow a BLine path on the vision-corrected FIELD pose (see m_blineVisionBuilder). resetToStart = put
+     * the pose on the path's start first (flipped for red; the robot must be placed there, square). Same
+     * stall abort as followBLinePath, and like it, finishes on position alone while aiming.
+     */
+    public Command followBLinePathWithVision(Path path, boolean resetToStart) {
+        Command follow = Commands.defer(() -> {
+            m_blineOnLastTarget = false; // never a stale finish from the previous path
+            m_blineAtEnd = false;
+            m_blineRunning = true;
+            return withBLineStallAbort(m_blineVisionBuilder.build(withFrictionFloors(path))
+                .until(() -> m_blineAiming && m_blineOnLastTarget && m_blineAtEnd));
+        }, Set.of(this)).finallyDo(() -> m_blineRunning = false);
+        if (!resetToStart) {
+            return follow;
+        }
+        Pose2d[] start = {Pose2d.kZero};
+        return this.runOnce(() -> {
+                Path flipped = path.copy();
+                if (DriverStation.getAlliance().orElse(Alliance.Blue) == Alliance.Red) {
+                    flipped.flip(); // the same flip BLine applies when the path starts
+                }
+                start[0] = flipped.getStartPose(this.getState().Pose.getRotation());
+                this.resetPose(start[0]);
+            })
+            // BLine reads the pose as it starts: let the odometry thread show the reset first (<= 0.1 s).
+            .andThen(Commands.waitUntil(() -> this.getState().Pose.getTranslation()
+                .getDistance(start[0].getTranslation()) < 0.01).withTimeout(0.1))
+            .andThen(follow);
     }
 
     // ---- Simple drive-forward autonomous with stall abort ----
@@ -548,17 +924,44 @@ public class CommandSwerveDrivetrain extends TunerSwerveDrivetrain implements Su
     // TODO tune all three on the robot.
     private static final double kAutoDriveStallAmps = 90.0;   // A, per drive Kraken X60
     private static final double kAutoSteerStallAmps = 35.0;   // A, per steer Kraken X44
-    private static final double kAutoStallDebounceSec = 0.3;  // s any motor must stay stalled to abort
+    private static final double kAutoStallDebounceSec = 0.3;  // s a drive motor must stay stalled to abort
+    // 0.3 -> 1.0 s for steer only (team 2026-10-14): module 0's steer sat at 37-44 A (its 40 A limit)
+    // for 0.3 s during normal rot-calib turns and cut 3 of 4 turns at ~77 deg. A jammed steer motor
+    // still aborts within 1 s; drive stays 0.3 s (that is what catches a robot pushing a wall).
+    private static final double kAutoSteerStallDebounceSec = 1.0;
 
-    /** True if ANY module's drive or steer motor is drawing stall-level stator current right now. */
-    private boolean anyDriveMotorStalled() {
-        for (var module : getModules()) {
-            double driveAmps = Math.abs(module.getDriveMotor().getStatorCurrent().getValueAsDouble());
-            double steerAmps = Math.abs(module.getSteerMotor().getStatorCurrent().getValueAsDouble());
+    /** Fresh debounced stall check: a drive motor stalled 0.3 s, or a steer motor stalled 1.0 s. */
+    private BooleanSupplier newStallCheck() {
+        return stallCheck(() -> motorStalledNow(true), () -> motorStalledNow(false));
+    }
+
+    /** Debounces the two raw stall signals with their own windows (pure, for the test). */
+    static BooleanSupplier stallCheck(BooleanSupplier driveNow, BooleanSupplier steerNow) {
+        Debouncer drive = new Debouncer(kAutoStallDebounceSec, Debouncer.DebounceType.kRising);
+        Debouncer steer = new Debouncer(kAutoSteerStallDebounceSec, Debouncer.DebounceType.kRising);
+        // Non-short-circuit | so both debouncers see every sample.
+        return () -> drive.calculate(driveNow.getAsBoolean()) | steer.calculate(steerNow.getAsBoolean());
+    }
+
+    /** True if ANY module's drive (drive = true) or steer motor is drawing stall-level stator current now. */
+    private boolean motorStalledNow(boolean drive) {
+        var modules = getModules();
+        for (int i = 0; i < modules.length; i++) {
+            double amps = Math.abs((drive ? modules[i].getDriveMotor() : modules[i].getSteerMotor())
+                .getStatorCurrent().getValueAsDouble());
             // Scaled with the low-battery cut: halved limits cap stator at 60 A, below the 90 A trip.
-            double driveTrip = kAutoDriveStallAmps
-                * (driveLimitsCut ? DriveLimitConstants.LOW_BATTERY_LIMIT_SCALE : 1.0);
-            if (driveAmps >= driveTrip || steerAmps >= kAutoSteerStallAmps) {
+            double trip = drive
+                ? kAutoDriveStallAmps * (driveLimitsCut ? DriveLimitConstants.LOW_BATTERY_LIMIT_SCALE : 1.0)
+                : kAutoSteerStallAmps;
+            if (drive) {
+                m_peakDriveAmps = Math.max(m_peakDriveAmps, amps);
+                m_blinePeakDrivePub.set(m_peakDriveAmps);
+            } else {
+                m_peakSteerAmps = Math.max(m_peakSteerAmps, amps);
+                m_blinePeakSteerPub.set(m_peakSteerAmps);
+            }
+            if (amps >= trip) {
+                m_stallWhy = String.format("module %d %s %.0f A", i, drive ? "drive" : "steer", amps);
                 return true;
             }
         }
@@ -596,7 +999,7 @@ public class CommandSwerveDrivetrain extends TunerSwerveDrivetrain implements Su
     private Command driveStraightAuto(double meters, double metersPerSecond, double dirX, double dirY) {
         return Commands.defer(() -> {
             Translation2d start = this.getState().Pose.getTranslation();
-            Debouncer stallDebounce = new Debouncer(kAutoStallDebounceSec, Debouncer.DebounceType.kRising);
+            BooleanSupplier stallCheck = newStallCheck();
             var driveForward = new SwerveRequest.RobotCentric()
                 .withDriveRequestType(DriveRequestType.Velocity); // closed-loop velocity
             var lock = new SwerveRequest.SwerveDriveBrake();
@@ -606,7 +1009,7 @@ public class CommandSwerveDrivetrain extends TunerSwerveDrivetrain implements Su
                         .withRotationalRate(0))
                     .until(() ->
                         start.getDistance(this.getState().Pose.getTranslation()) >= meters
-                        || stallDebounce.calculate(anyDriveMotorStalled()))
+                        || stallCheck.getAsBoolean())
                     // One-shot X-lock so the command ENDS (default command then holds 0) -- a
                     // run-forever brake leg would keep the drivetrain and lock the driver out.
                     .andThen(this.runOnce(() -> this.setControl(lock)));

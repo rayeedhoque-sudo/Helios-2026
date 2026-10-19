@@ -11,6 +11,8 @@ import com.revrobotics.PersistMode;
 import com.revrobotics.spark.SparkMax;
 import com.revrobotics.spark.config.SparkBaseConfig.IdleMode;
 import com.revrobotics.spark.config.SparkMaxConfig;
+import java.util.function.BooleanSupplier;
+
 import edu.wpi.first.math.filter.Debouncer;
 import edu.wpi.first.networktables.GenericEntry;
 import edu.wpi.first.wpilibj.Timer;
@@ -32,7 +34,7 @@ public class IntakeSubsystem extends SubsystemBase {
     
     //State Machine
         public enum IntakeSSTATE{
-            INTAKE_STATE, OUTTAKE_STATE, AGITATE_STATE, STOW_STATE;
+            INTAKE_STATE, OUTTAKE_STATE, AGITATE_STATE, STOW_INTAKE_STATE, STOW_STATE;
         }
     
     //Tracker Variables
@@ -40,6 +42,8 @@ public class IntakeSubsystem extends SubsystemBase {
         // its dashboard entry sat frozen at STOW forever. periodic() actuates desiredState
         // directly every loop -- there is no separate observed state to display.)
         private IntakeSSTATE desiredState;
+        // AGITATE roller direction: +1 inward (slider extending), -1 outward (retracting).
+        private double agitateDirection = 1;
 
     //Data
         private ShuffleboardTab IntakeSubsystemTab = Shuffleboard.getTab("Intake Subsystem Tab");
@@ -111,13 +115,23 @@ public class IntakeSubsystem extends SubsystemBase {
 
     }
 
+    /**
+     * KILL SWITCH for the whole intake (team request 2026-10-10), same shape as the hopper's
+     * HOPPER_ENABLED. false = NEITHER intake motor is ever driven: the rollers and the slider
+     * are commanded 0 no matter which command is running -- teleop (LT/Y/X, RT/RB shot), test
+     * mode and autonomous alike. Bindings and commands still schedule; they just move nothing
+     * (slider moves end on their own via the stall/timeout checks). Stops (roller brake,
+     * slider stopMotor) still go out, and brake mode holds the slider WHEREVER IT IS NOW.
+     */
+    private static final boolean INTAKE_ENABLED = true;
+
     //Subsystem Methods
         public void intake(){
-                intakeMotor.set(IntakeSubsystemConstants.INTAKE_SPEED);
+                intakeMotor.set(INTAKE_ENABLED ? IntakeSubsystemConstants.INTAKE_SPEED : 0);
         }
 
         public void outtake(){
-                intakeMotor.set(-IntakeSubsystemConstants.OUTTAKE_SPEED);
+                intakeMotor.set(INTAKE_ENABLED ? -IntakeSubsystemConstants.OUTTAKE_SPEED : 0);
         }
 
         // Interrupt-safety: brake the rollers and reset the state machine so periodic()
@@ -129,18 +143,28 @@ public class IntakeSubsystem extends SubsystemBase {
             intakeMotor.setControl(rollerBrake);
         }
 
-        // True while the rollers are commanded to spin (intake OR outtake) -- the
-        // drivetrain reads this to halve its translation speed while the intake is live.
-        // AGITATE (shot/unjam slow roll) does not count -- those set their own drive speed.
-        public boolean rollersRunning(){
-            return desiredState == IntakeSSTATE.INTAKE_STATE || desiredState == IntakeSSTATE.OUTTAKE_STATE;
+        // LT release (team 2026-10-14): rollers already pulling in drop to STOW_ROLLER_SPEED
+        // while the slider stows. Rollers that never started (tap release) stay stopped.
+        public void slowRollersForStow(){
+            if (desiredState == IntakeSSTATE.INTAKE_STATE) {
+                desiredState = IntakeSSTATE.STOW_INTAKE_STATE;
+            }
         }
 
-        // True while the slider motor is not actually turning (measured encoder rpm, not
-        // commanded output). Not turning while commanded = hard stop or jam.
-        public boolean isSliderEncoderStalled(){
-            return Math.abs(intakeSliderMotor.getEncoder().getVelocity())
-                    < IntakeSubsystemConstants.SLIDER_STALL_MOTOR_RPM;
+        // True while the rollers are commanded to spin (intake, outtake, or the slow roll-in
+        // during LT's release stow) -- the drivetrain reads this to halve its translation speed
+        // while the intake is live, and LT's release belts run while it is true.
+        // AGITATE (shot/unjam slow roll) does not count -- those set their own drive speed.
+        public boolean rollersRunning(){
+            return INTAKE_ENABLED
+                    && (desiredState == IntakeSSTATE.INTAKE_STATE || desiredState == IntakeSSTATE.OUTTAKE_STATE
+                        || desiredState == IntakeSSTATE.STOW_INTAKE_STATE);
+        }
+
+        // True while the slider motor is turning slower than stallRpm (measured encoder rpm,
+        // not commanded output). Not turning while commanded = hard stop or jam.
+        public boolean isSliderEncoderStalled(double stallRpm){
+            return Math.abs(intakeSliderMotor.getEncoder().getVelocity()) < stallRpm;
         }
 
         // True while the measured motor current is pegged near the smart limit -- the
@@ -162,7 +186,11 @@ public class IntakeSubsystem extends SubsystemBase {
         // current path needs no grace because the open-loop ramp keeps startup current
         // low. Timeout is a backstop so the motor can never sit stalled if detection
         // misses. Brake mode holds position afterward.
+        // A slower duty than SLIDER_DUTY scales the stall rpm down and the timeout up by the
+        // same ratio (1.0 at SLIDER_DUTY = unchanged), so a slow move is not read as a stall
+        // or cut short mid-travel.
         private Command moveSliderUntilStall(double dutyCycle){
+            double speedScale = Math.abs(dutyCycle) / IntakeSubsystemConstants.SLIDER_DUTY;
             return Commands.startEnd(
                     ()->{
                         sliderCurrentStallDebouncer = new Debouncer(
@@ -170,7 +198,7 @@ public class IntakeSubsystem extends SubsystemBase {
                         sliderVelStallDebouncer = new Debouncer(
                             IntakeSubsystemConstants.SLIDER_STALL_DEBOUNCE_SEC, Debouncer.DebounceType.kRising);
                         sliderMoveTimer.restart();
-                        intakeSliderMotor.set(dutyCycle);
+                        intakeSliderMotor.set(INTAKE_ENABLED ? dutyCycle : 0);
                     },
                     ()-> intakeSliderMotor.stopMotor(),
                     this)
@@ -182,8 +210,8 @@ public class IntakeSubsystem extends SubsystemBase {
                     sliderCurrentStallDebouncer.calculate(isSliderCurrentPegged())
                     || sliderVelStallDebouncer.calculate(
                         sliderMoveTimer.hasElapsed(IntakeSubsystemConstants.SLIDER_GRACE_SEC)
-                            && isSliderEncoderStalled()))
-                .withTimeout(IntakeSubsystemConstants.SLIDER_MOVE_TIMEOUT_SEC);
+                            && isSliderEncoderStalled(IntakeSubsystemConstants.SLIDER_STALL_MOTOR_RPM * speedScale)))
+                .withTimeout(IntakeSubsystemConstants.SLIDER_MOVE_TIMEOUT_SEC / speedScale);
         }
 
         // Extend the intake slider out until the hard stop. TODO verify sign on robot
@@ -195,6 +223,13 @@ public class IntakeSubsystem extends SubsystemBase {
         // Retract (de-extend) the intake slider until the hard stop.
         public Command retractSliderCommand(){
             return moveSliderUntilStall(IntakeSubsystemConstants.SLIDER_DUTY);
+        }
+
+        // AUTO START (team 2026-10-16): slider fully out to its stop and back in, twice. Rollers
+        // untouched (left braked). Each stroke is the normal stall-stopped move, so it ends stowed.
+        public Command sliderCycleCommand(){
+            return Commands.sequence(extendSliderCommand(), retractSliderCommand(),
+                                     extendSliderCommand(), retractSliderCommand());
         }
 
         // ROLLER-ONLY TEST: spin the rollers (Kraken X60, CAN 16) while held, stop on release.
@@ -223,19 +258,42 @@ public class IntakeSubsystem extends SubsystemBase {
             );
         }
 
-        // RT SHOT + VIEW UNJAM (team spec 2026-09-30, rollers 2026-10-07): rollers inward at
-        // ROLLER_AGITATE_SPEED (stopped again on end/interrupt); the slider extends for only
-        // SLIDER_CYCLE_EXTEND_SEC (a partial stroke, never to the outer stop), then retracts
-        // fully to the stow stop, and repeats for the whole hold. Both legs are the same
-        // stall-stopped move as extend/retract (pulley-snap guard intact); the extend leg is
-        // just cut short by the timeout. The RT binding's onFalse(stowCommand) brings it home.
-        public Command sliderCycleCommand(){
-            return Commands.sequence(
+        // RT / RB / LB SHOT: the slider extends for only SLIDER_CYCLE_EXTEND_SEC (a partial
+        // stroke, never to the outer stop), then retracts fully to the stow stop, and repeats
+        // for the whole hold (agitation re-added 2026-10-10, team request). The rollers spin at
+        // ROLLER_AGITATE_SPEED inward while it extends and outward while it retracts, alternating
+        // every leg (team 2026-10-10); stopped on end/interrupt. Both legs are the same
+        // stall-stopped move as extend/retract (pulley-snap guard intact); the extend leg is just
+        // cut short by the timeout. The binding's onFalse(stowCommand) brings it home.
+        // INTAKE WHILE SHOOTING (team 2026-10-10): while intakeHeld (LT), agitation stops and the
+        // normal intake runs instead (slider out to its stop, then rollers in at INTAKE_SPEED);
+        // letting go goes straight back to agitation. The shot keeps the hopper, so the belts
+        // stay on the shot feed.
+        public Command shotIntakeCommand(BooleanSupplier intakeHeld){
+            return shotIntakeCommand(intakeHeld, () -> false);
+        }
+
+        /**
+         * Same, plus LB's "behind the hub" block (team 2026-10-17): while shotBlocked (and LT is
+         * not held) there is no agitation -- the slider stows (rollers stopped) and waits; once
+         * clear, agitation starts again. LT still wins either way.
+         */
+        public Command shotIntakeCommand(BooleanSupplier intakeHeld, BooleanSupplier shotBlocked){
+            Command agitate = Commands.sequence(
                     Commands.runOnce(() -> desiredState = IntakeSSTATE.AGITATE_STATE),
                     Commands.repeatingSequence(
+                        Commands.runOnce(() -> agitateDirection = 1),
                         extendSliderCommand().withTimeout(IntakeSubsystemConstants.SLIDER_CYCLE_EXTEND_SEC),
-                        retractSliderCommand())
-            ).finallyDo(this::stopRollers);
+                        Commands.runOnce(() -> agitateDirection = -1),
+                        retractSliderCommand()))
+                .until(() -> intakeHeld.getAsBoolean() || shotBlocked.getAsBoolean());
+            Command intake = intakeCommand().andThen(Commands.idle())
+                .until(() -> !intakeHeld.getAsBoolean());
+            Command stowed = stowCommand().andThen(Commands.idle())
+                .until(() -> intakeHeld.getAsBoolean() || !shotBlocked.getAsBoolean());
+            return Commands.repeatingSequence(
+                    Commands.either(intake, Commands.either(stowed, agitate, shotBlocked), intakeHeld))
+                .finallyDo(this::stopRollers);
         }
 
         public Command stowCommand(){
@@ -259,7 +317,10 @@ public class IntakeSubsystem extends SubsystemBase {
                     outtake();
                 }
                 else if(desiredState == IntakeSSTATE.AGITATE_STATE){
-                    intakeMotor.set(IntakeSubsystemConstants.ROLLER_AGITATE_SPEED);
+                    intakeMotor.set(INTAKE_ENABLED ? agitateDirection * IntakeSubsystemConstants.ROLLER_AGITATE_SPEED : 0);
+                }
+                else if(desiredState == IntakeSSTATE.STOW_INTAKE_STATE){
+                    intakeMotor.set(INTAKE_ENABLED ? IntakeSubsystemConstants.STOW_ROLLER_SPEED : 0);
                 } else {
                     // STOW: actively brake (stopMotor = coast, which reads as "still rolling").
                     intakeMotor.setControl(rollerBrake);

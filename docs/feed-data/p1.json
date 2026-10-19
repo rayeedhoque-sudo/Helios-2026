@@ -1,0 +1,99 @@
+{
+  "point": "p1",
+  "when": "2026-10-17 12:48:23",
+  "samples": 150,
+  "alliance": "red",
+  "enabled_during": false,
+  "ll_mount_pose": [
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    -0.0
+  ],
+  "ll_pipeline": 0.0,
+  "odom_pose": {
+    "x": 16.95682393180386,
+    "y": 3.6869767136763625,
+    "heading_deg": -148.91883192699115,
+    "valid_samples": 150
+  },
+  "launcher_mean": {
+    "Current Velocity": 0.0,
+    "Desired Velocity": 1600.0,
+    "Current Angle": 28.65234375,
+    "Desired Angle": 29.0
+  },
+  "tags": [
+    {
+      "id": 6,
+      "seen_frac": 0.99,
+      "txnc": 23.8343453837057,
+      "tync": -3.5262079338148804,
+      "ta": 0.0015762754662849959,
+      "dist_cam_m": 3.5163978662111273,
+      "dist_sd_m": 0.004539777165596929,
+      "ambiguity": 0.26963786834402875,
+      "ground_m": 3.5097405145287777,
+      "tag_field": [
+        11.8779798,
+        0.6444996,
+        180.0
+      ],
+      "robot_from_tag": [
+        15.359684319384769,
+        1.087232159250401
+      ]
+    }
+  ],
+  "shot": {
+    "rpm": 1600,
+    "hood_deg": 28.7,
+    "landing": null,
+    "notes": "successful feed shot (team). Single tag (6): position from LL t6c_ts (camera 3.33 m out, 1.05 m to the +y side; the other side is off-field) ~ (8.55, 1.70), heading ~6 deg from bearing. Odometry/MT1 impossible at capture."
+  },
+  "mt1_camera_pose": {
+    "x": 14.237622721211164,
+    "y": -0.09496449183367743,
+    "yaw_deg": 127.26522266151824,
+    "frames": 149
+  },
+  "ll_fiducials_3d": [
+    {
+      "fID": 6,
+      "t6c_ts": [
+        -1.0538559960345781,
+        0.41416876946265996,
+        -3.3272245528178277,
+        19.419526263159973,
+        -6.899017643626874,
+        -0.5909782580451999
+      ],
+      "t6t_cs": [
+        1.4500763453192211,
+        0.6756430161024919,
+        3.1294339044606168,
+        -19.485970188139937,
+        6.7022327328233215,
+        -1.742973495784517
+      ],
+      "t6r_fs": [
+        5.451387689679436,
+        -4.12807198120442,
+        -0.10606676946265997,
+        -0.6218656656309951,
+        -19.34748162831821,
+        127.10523724489488
+      ],
+      "tx_nocross": 23.8275332023627,
+      "ty_nocross": -3.5410818063060816
+    }
+  ],
+  "est_pose": {
+    "x": 8.55,
+    "y": 1.7,
+    "heading_deg": 6.3,
+    "source": "t6c_ts + txnc, mirror resolved by field bounds"
+  }
+}

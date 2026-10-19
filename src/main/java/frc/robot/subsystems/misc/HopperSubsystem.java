@@ -178,6 +178,14 @@ public class HopperSubsystem extends SubsystemBase{
 
     // Shot start reverse (team request 2026-10-05): restarted on every RT press.
     private final Timer shotReverseTimer = new Timer();
+    // Path 1's first hub shot skips the start-of-shot reverse (team 2026-10-17); read at each shot start.
+    private BooleanSupplier skipShotReverse = () -> false;
+    private double shotReverseSec = HopperSubsystemConstants.HOPPER_SHOT_REVERSE_SEC;
+
+    /** Skip the start-of-shot belt reverse for any shot that starts while this is true. */
+    public void setSkipShotReverse(BooleanSupplier skip){
+        skipShotReverse = skip;
+    }
 
     /**
      * SHOT FEED (RT, hold): belts run at HOPPER_SHOT_SPEED only while beltsOn -- the launcher's
@@ -192,7 +200,7 @@ public class HopperSubsystem extends SubsystemBase{
                 // First HOPPER_SHOT_REVERSE_SEC of every shot: belts BACKWARD at the unjam duty,
                 // pulling fuel away from the feeder while the wheels spin up. Then the normal
                 // at-speed-gated feed.
-                if (!shotReverseTimer.hasElapsed(HopperSubsystemConstants.HOPPER_SHOT_REVERSE_SEC)) {
+                if (!shotReverseTimer.hasElapsed(shotReverseSec)) {
                     setBelts(-HopperSubsystemConstants.UNJAM_SPEED);
                 } else if (beltsOn.getAsBoolean()) { indexFuelForShot(); } else { stopIndex(); }
             },
@@ -204,6 +212,7 @@ public class HopperSubsystem extends SubsystemBase{
             // in end() above -- runs once per press, not every loop.
             .beforeStarting(() -> {
                 setBeltCurrentLimit(HopperSubsystemConstants.HOPPER_SHOT_CURRENT_LIMIT_A);
+                shotReverseSec = skipShotReverse.getAsBoolean() ? 0 : HopperSubsystemConstants.HOPPER_SHOT_REVERSE_SEC;
                 shotReverseTimer.restart();
             });
     }

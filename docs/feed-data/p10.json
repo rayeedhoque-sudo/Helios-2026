@@ -1,0 +1,118 @@
+{
+  "point": "p10",
+  "when": "2026-10-17 13:14:06",
+  "samples": 150,
+  "alliance": "red",
+  "enabled_during": false,
+  "ll_mount_pose": [
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    -0.0
+  ],
+  "ll_pipeline": 0.0,
+  "tag_alias": {
+    "22": 28
+  },
+  "odom_pose": {
+    "x": 6.4657031859353795,
+    "y": 2.8540535301519148,
+    "heading_deg": -176.96366477295695,
+    "valid_samples": 150
+  },
+  "launcher_mean": {
+    "Current Velocity": 0.0,
+    "Desired Velocity": 2000.0,
+    "Current Angle": 28.59609375,
+    "Desired Angle": 29.0
+  },
+  "tags": [
+    {
+      "id": 22,
+      "seen_frac": 1.0,
+      "txnc": 17.547783243115838,
+      "tync": 7.564622686871932,
+      "ta": 0.006093459650874138,
+      "dist_cam_m": 1.6539206685219932,
+      "dist_sd_m": 0.0018703589685460647,
+      "ambiguity": 0.2142757474773036,
+      "ground_m": 1.6395266185854978,
+      "tag_field": [
+        4.5881798,
+        0.6444996,
+        180.0
+      ],
+      "robot_from_tag": [
+        6.175401574313602,
+        0.2336777746362816
+      ]
+    }
+  ],
+  "shot": {
+    "rpm": 2000,
+    "hood_deg": 28.7,
+    "landing": null,
+    "notes": "successful feed shot (team: 2000 rpm, hood 28.7) from the FAR (blue) alliance zone. Printed tag 22 stands in at tag 28 (4.588, 0.644, yaw 180). 1.65 m, amb 0.21. 3D: direct (3.04, 1.09) hdg 1.7 vs mirror (3.04, 0.20) hdg 33.4 -- both on field; direct taken (low ambiguity; Pigeon -177 + the p3-p8 ~-179.4 offset = ~2.4 deg agrees; mirror puts the camera 0.2 m off the wall)."
+  },
+  "mt1_camera_pose": {
+    "x": 5.293380305017356,
+    "y": 1.7420856654857724,
+    "yaw_deg": 123.63357755099882,
+    "frames": 150
+  },
+  "ll_fiducials_3d": [
+    {
+      "fID": 22,
+      "t6c_ts": [
+        -0.4407156057944335,
+        0.37229164075359755,
+        -1.5504011691317674,
+        22.017168759349453,
+        -3.3539488596263514,
+        -1.1493742709428578
+      ],
+      "t6t_cs": [
+        0.5380319383659801,
+        0.23352203180766384,
+        1.546791579421571,
+        -21.98942765187594,
+        3.54005539585399,
+        -0.19125690700691894
+      ],
+      "t6r_fs": [
+        -3.475732399735885,
+        -2.2827271235555697,
+        -0.06418964075359757,
+        -1.2370986285684147,
+        -21.945288451548848,
+        123.81683893970784
+      ],
+      "tx_nocross": 17.542853909224604,
+      "ty_nocross": 7.561741133109663,
+      "cam_field": [
+        {
+          "x": 3.0377786308682326,
+          "y": 1.0852152057944338,
+          "heading_deg": 1.6745722776560399,
+          "on_field": true,
+          "mirrored": false
+        },
+        {
+          "x": 3.0377786308682326,
+          "y": 0.2037839942055667,
+          "heading_deg": 33.41113554079317,
+          "on_field": true,
+          "mirrored": true
+        }
+      ]
+    }
+  ],
+  "est_pose": {
+    "x": 3.04,
+    "y": 1.09,
+    "heading_deg": 1.7,
+    "source": "tag 22-as-28 3D direct solve; Pigeon offset agrees"
+  }
+}

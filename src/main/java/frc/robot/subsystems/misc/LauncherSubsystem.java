@@ -9,15 +9,14 @@ import com.ctre.phoenix6.configs.Slot0Configs;
 import com.ctre.phoenix6.configs.SoftwareLimitSwitchConfigs;
 import com.ctre.phoenix6.configs.TalonFXConfiguration;
 import com.ctre.phoenix6.controls.CoastOut;
-import com.ctre.phoenix6.controls.Follower;
 import com.ctre.phoenix6.controls.MotionMagicVoltage;
 import com.ctre.phoenix6.controls.NeutralOut;
 import com.ctre.phoenix6.controls.VelocityVoltage;
 import com.ctre.phoenix6.controls.VoltageOut;
 import com.ctre.phoenix6.hardware.TalonFX;
 import com.ctre.phoenix6.signals.InvertedValue;
-import com.ctre.phoenix6.signals.MotorAlignmentValue;
 import com.ctre.phoenix6.signals.NeutralModeValue;
+import java.util.function.BooleanSupplier;
 import java.util.function.DoubleSupplier;
 
 import edu.wpi.first.math.MathUtil;
@@ -36,8 +35,9 @@ import frc.robot.Constants.SubsystemConstants.HopperSubsystemConstants;
 import frc.robot.Constants.SubsystemConstants.LauncherConstants;
 
 /**
- * V2 LAUNCHER (drum shooter, 2026-09-30): 3 flywheel Kraken X60s (15 leader, 14 + 13
- * followers), a Kraken X60 feeder (CAN 24) and a Kraken X44 hood (CAN 18).
+ * V2 LAUNCHER (drum shooter, 2026-09-30): 3 flywheel Kraken X60s -- LEFT wheel 15 (+ 14 belted
+ * to it), RIGHT wheel 13, a separate wheel with its own bang-bang (team 2026-10-17) -- a Kraken
+ * X60 feeder (CAN 24) and a Kraken X44 hood (CAN 18).
  *
  * The hood has NO absolute encoder -- its angle comes from the X44's internal encoder, zeroed
  * by homing into the bottom hard stop on every enable. Angle = degrees above that stop.
@@ -60,6 +60,11 @@ public class LauncherSubsystem extends SubsystemBase {
         // Flywheels: WPILib bang-bang on the RIO + 90% feedforward, sent as plain volts.
         private final BangBangController flywheelBangBang = new BangBangController();
         private final VoltageOut flywheelVolts = new VoltageOut(0);
+        // CAN 13 = the RIGHT wheel, a separate wheel (team 2026-10-17): its own bang-bang on its own
+        // speed. As a Follower it only copied 15's volts, so a ball that slowed just the right wheel
+        // went unseen (15 read on target) and it recovered on feedforward alone.
+        private final BangBangController rightBangBang = new BangBangController();
+        private final VoltageOut rightVolts = new VoltageOut(0);
         // CAN 14 (22T pulley, turns 18/22 as fast as 15): its own scaled voltage, not a Follower.
         private final VoltageOut beltedVolts = new VoltageOut(0);
         private final VelocityVoltage feederVelocity = new VelocityVoltage(0);
@@ -84,14 +89,21 @@ public class LauncherSubsystem extends SubsystemBase {
         private double homingStartDeg = 0;
         private final Timer homingTimer = new Timer();
         private final Timer shotReverseTimer = new Timer(); // restarted at the start of every RT shot
+        // Path 1's first hub shot skips the start-of-shot reverse (team 2026-10-17); read at each shot start.
+        private BooleanSupplier skipShotReverse = () -> false;
+        private double shotReverseSec = HopperSubsystemConstants.HOPPER_SHOT_REVERSE_SEC;
         private Debouncer homingStopDebouncer;
         private Debouncer hoodStallDebouncer;
+        private final Debouncer idleStallDebouncer =
+            new Debouncer(LauncherConstants.IDLE_STALL_SEC, Debouncer.DebounceType.kRising);
+        private boolean idleStalled = false; // zone idle cut off by a jam until re-armed
 
     //Data -- the tab name and the entry names the driver companion's shooter panel already
     // reads are kept, so it keeps working (angles are now degrees above the homed stop).
         private final ShuffleboardTab tab = Shuffleboard.getTab("Shooter Subsystem Tab");
         private final GenericEntry targetRpmEntry = tab.add("Desired Velocity", 0.0).getEntry();
-        private final GenericEntry rpmEntry = tab.add("Current Velocity", 0.0).getEntry();
+        private final GenericEntry rpmEntry = tab.add("Current Velocity", 0.0).getEntry(); // left wheel (15)
+        private final GenericEntry rightRpmEntry = tab.add("Right Wheel Velocity", 0.0).getEntry(); // 13, flywheel rpm
         private final GenericEntry atSpeedEntry = tab.add("Desired Velocity Reached", false).getEntry();
         private final GenericEntry shootingEntry = tab.add("Subsystem State", false).getEntry();
         private final GenericEntry motorRpmEntry = tab.add("Current Flywheel (motor RPM)", 0.0).getEntry();
@@ -109,7 +121,7 @@ public class LauncherSubsystem extends SubsystemBase {
         private final GenericEntry homingTravelEntry = tab.add("Hood Homing Travel (deg)", 0.0).getEntry();
 
     public LauncherSubsystem(){
-        // Flywheels: V1's team-tuned 50 A stator / 25 A supply on EACH motor (followers enforce
+        // Flywheels: FLYWHEEL_STATOR_A / FLYWHEEL_SUPPLY_A on EACH motor (followers enforce
         // their own configs), Coast so they spin down freely.
             CurrentLimitsConfigs flywheelLimits = new CurrentLimitsConfigs()
                 .withStatorCurrentLimit(LauncherConstants.FLYWHEEL_STATOR_A).withStatorCurrentLimitEnable(true)
@@ -123,9 +135,6 @@ public class LauncherSubsystem extends SubsystemBase {
             // COAST IS MANDATORY for bang-bang (WPILib docs): in brake, every "off" pulse would
             // brake the wheel and fight the controller into destructive oscillation.
             flywheelLeader.getConfigurator().apply(leaderConfig);
-            TalonFXConfiguration followerConfig = new TalonFXConfiguration()
-                .withCurrentLimits(flywheelLimits)
-                .withMotorOutput(new MotorOutputConfigs().withNeutralMode(NeutralModeValue.Coast));
             // 14 is driven directly (see FLYWHEEL_BELTED_SPEED_RATIO): same direction as 15
             // unless FLYWHEEL_BELTED_OPPOSED, set through its own inversion.
             flywheelBelted.getConfigurator().apply(new TalonFXConfiguration()
@@ -135,12 +144,18 @@ public class LauncherSubsystem extends SubsystemBase {
                     .withInverted(LauncherConstants.FLYWHEEL_LEADER_INVERTED ^ LauncherConstants.FLYWHEEL_BELTED_OPPOSED
                         ? InvertedValue.Clockwise_Positive : InvertedValue.CounterClockwise_Positive)));
             flywheelBelted.setControl(coast);
-            flywheelRight.getConfigurator().apply(followerConfig);
-            flywheelRight.setControl(new Follower(flywheelLeader.getDeviceID(),
-                LauncherConstants.FLYWHEEL_RIGHT_OPPOSED ? MotorAlignmentValue.Opposed : MotorAlignmentValue.Aligned));
+            // 13: the direction the robot-verified Follower(Opposed) gave it -- opposite 15's.
+            flywheelRight.getConfigurator().apply(new TalonFXConfiguration()
+                .withCurrentLimits(flywheelLimits)
+                .withMotorOutput(new MotorOutputConfigs()
+                    .withNeutralMode(NeutralModeValue.Coast)
+                    .withInverted(LauncherConstants.FLYWHEEL_LEADER_INVERTED ^ LauncherConstants.FLYWHEEL_RIGHT_OPPOSED
+                        ? InvertedValue.Clockwise_Positive : InvertedValue.CounterClockwise_Positive)));
+            flywheelRight.setControl(coast);
             flywheelLeader.setControl(coast);
             // Bang-bang runs on the RIO every 20 ms, so make sure each loop reads a fresh speed.
             flywheelLeader.getVelocity().setUpdateFrequency(100);
+            flywheelRight.getVelocity().setUpdateFrequency(100);
 
         // Feeder: 30 A stator / 20 A supply (team-approved), Coast, 0.25 s closed-loop ramp to
         // soften spin-up inrush. A jam drops it out of the at-speed band, which stops the belts.
@@ -178,7 +193,8 @@ public class LauncherSubsystem extends SubsystemBase {
                 .withMotionMagic(new MotionMagicConfigs()
                     .withMotionMagicCruiseVelocity(LauncherConstants.HOOD_CRUISE_RPS)
                     .withMotionMagicAcceleration(LauncherConstants.HOOD_ACCEL_RPS2))
-                .withSlot0(new Slot0Configs().withKP(LauncherConstants.HOOD_kP).withKV(LauncherConstants.HOOD_kV)));
+                .withSlot0(new Slot0Configs().withKP(LauncherConstants.HOOD_kP).withKV(LauncherConstants.HOOD_kV)
+                    .withKG(LauncherConstants.HOOD_kG))); // default GravityType = Elevator_Static
             hood.setControl(hoodNeutral);
     }
 
@@ -209,9 +225,39 @@ public class LauncherSubsystem extends SubsystemBase {
             return MathUtil.clamp(volts, 0, LauncherConstants.FLYWHEEL_BANG_BANG_VOLTS);
         }
 
+        /**
+         * Zone-idle volts: feedforward only (kV x IDLE_FLYWHEEL_RPM, ~2.4 V -- no 12 V bang-bang
+         * bursts). 0 (= coast) while the wheel is already faster, e.g. just after a shot: driving
+         * it at the idle volts from above would brake it.
+         */
+        static double idleVolts(double measuredFlywheelRpm){
+            return measuredFlywheelRpm < LauncherConstants.IDLE_FLYWHEEL_RPM
+                ? LauncherConstants.FLYWHEEL_kV * flywheelRpmToMotorRps(LauncherConstants.IDLE_FLYWHEEL_RPM) : 0;
+        }
+
         /** CAN 14's voltage: the leader's, scaled by its 18/22 speed ratio (22T pulley). */
         static double beltedMotorVolts(double leaderVolts){
             return leaderVolts * LauncherConstants.FLYWHEEL_BELTED_SPEED_RATIO;
+        }
+
+        /**
+         * Flywheel belt gate (team 2026-10-10, "on point"): it opens only once the wheels actually
+         * reach the target (target .. target + tol), then stays open down to target - dropTol so a
+         * ball's normal dip doesn't stutter the belts. Below that it closes and waits for the
+         * target again.
+         */
+        static boolean flywheelAtSpeed(boolean wasAtSpeed, double measured, double target, double tolerance,
+                double dropTolerance){
+            double low = wasAtSpeed ? target - dropTolerance : target;
+            return target != 0 && measured >= low && measured <= target + tolerance;
+        }
+
+        /** The belt gate for BOTH wheels (left 15, right 13): each must pass flywheelAtSpeed. */
+        static boolean wheelsAtSpeed(boolean wasAtSpeed, double leftRpm, double rightRpm, double target){
+            return flywheelAtSpeed(wasAtSpeed, leftRpm, target,
+                    LauncherConstants.FLYWHEEL_AT_SPEED_TOL_RPM, LauncherConstants.FLYWHEEL_FEED_DROP_TOL_RPM)
+                && flywheelAtSpeed(wasAtSpeed, rightRpm, target,
+                    LauncherConstants.FLYWHEEL_AT_SPEED_TOL_RPM, LauncherConstants.FLYWHEEL_FEED_DROP_TOL_RPM);
         }
 
         /** True only for a nonzero target with the measurement inside the band. */
@@ -245,6 +291,10 @@ public class LauncherSubsystem extends SubsystemBase {
 
         private double getFlywheelRpm(){
             return motorRpsToFlywheelRpm(flywheelLeader.getVelocity().getValueAsDouble());
+        }
+
+        private double getRightFlywheelRpm(){
+            return motorRpsToFlywheelRpm(flywheelRight.getVelocity().getValueAsDouble());
         }
 
         private double getHoodDeg(){
@@ -281,26 +331,59 @@ public class LauncherSubsystem extends SubsystemBase {
             });
         }
 
+        /** Skip the start-of-shot feeder reverse for any shot that starts while this is true. */
+        public void setSkipShotReverse(BooleanSupplier skip){
+            skipShotReverse = skip;
+        }
+
+        // Flywheels bang-banged to rpm (clamped); a 0 target coasts instead (0 V would still be a command).
+        private void driveFlywheels(double rpm){
+            double targetRps = flywheelRpmToMotorRps(clampFlywheelRpm(rpm));
+            if (targetRps <= 0) {
+                flywheelLeader.setControl(coast);
+                flywheelBelted.setControl(coast);
+                flywheelRight.setControl(coast);
+            } else {
+                double volts = flywheelBangBangVolts(
+                    flywheelBangBang, flywheelLeader.getVelocity().getValueAsDouble(), targetRps);
+                flywheelLeader.setControl(flywheelVolts.withOutput(volts));
+                flywheelBelted.setControl(beltedVolts.withOutput(beltedMotorVolts(volts)));
+                flywheelRight.setControl(rightVolts.withOutput(flywheelBangBangVolts(
+                    rightBangBang, flywheelRight.getVelocity().getValueAsDouble(), targetRps)));
+            }
+        }
+
+        /**
+         * Path 1 pre-spin (team 2026-10-17): flywheels to rpm and the hood to hoodDeg (once homed) ahead of a
+         * shot, feeder coasting -- nothing is fed and isShooting() stays false. The shot that follows takes
+         * over at speed. End = flywheels coast; the hood stays where it is (the shot keeps it).
+         */
+        public Command spinUpCommand(DoubleSupplier rpm, DoubleSupplier hoodDeg){
+            return runEnd(
+                () -> {
+                    driveFlywheels(rpm.getAsDouble());
+                    feeder.setControl(coast);
+                    if (hoodState == HoodState.HOMED) {
+                        hoodTargetDeg = clampHoodDeg(hoodDeg.getAsDouble());
+                    }
+                },
+                () -> {
+                    flywheelLeader.setControl(coast);
+                    flywheelBelted.setControl(coast);
+                    flywheelRight.setControl(coast);
+                });
+        }
+
         // The shot body: flywheels at targetRpm (re-read every loop), feeder per the reverse window.
         private Command shootCommand(DoubleSupplier targetRpm){
             return runEnd(
                 () -> {
                     shooting = true;
                     shotTargetRpm = clampFlywheelRpm(targetRpm.getAsDouble());
-                    // Bang-bang every loop; a 0 target coasts instead (0 V would still be a command).
-                    double targetRps = flywheelRpmToMotorRps(shotTargetRpm);
-                    if (targetRps <= 0) {
-                        flywheelLeader.setControl(coast);
-                        flywheelBelted.setControl(coast);
-                    } else {
-                        double volts = flywheelBangBangVolts(
-                            flywheelBangBang, flywheelLeader.getVelocity().getValueAsDouble(), targetRps);
-                        flywheelLeader.setControl(flywheelVolts.withOutput(volts));
-                        flywheelBelted.setControl(beltedVolts.withOutput(beltedMotorVolts(volts)));
-                    }
+                    driveFlywheels(shotTargetRpm);
                     // Same window as the hopper's shot reverse: feeder backward super slowly,
                     // then up to its normal feed speed.
-                    if (!shotReverseTimer.hasElapsed(HopperSubsystemConstants.HOPPER_SHOT_REVERSE_SEC)) {
+                    if (!shotReverseTimer.hasElapsed(shotReverseSec)) {
                         feeder.set(-LauncherConstants.FEEDER_SHOT_REVERSE_DUTY);
                     } else {
                         feeder.setControl(feederVelocity.withVelocity(
@@ -311,9 +394,54 @@ public class LauncherSubsystem extends SubsystemBase {
                     shooting = false;
                     flywheelLeader.setControl(coast);
                     flywheelBelted.setControl(coast);
+                    flywheelRight.setControl(coast);
                     feeder.setControl(coast);
                 })
-                .beforeStarting(shotReverseTimer::restart);
+                .beforeStarting(() -> {
+                    shotReverseSec = skipShotReverse.getAsBoolean() ? 0 : HopperSubsystemConstants.HOPPER_SHOT_REVERSE_SEC;
+                    shotReverseTimer.restart();
+                });
+        }
+
+        /**
+         * Default command (teleop zone idle, team 2026-10-17): flywheels at idleVolts while spin is
+         * true, else coast. Feeder untouched; leaves isShooting() false, so the drive isn't slowed
+         * and the belts stay shut. Any shot takes over from it; end = coast. Jammed (pushing, under
+         * IDLE_STALL_RPM for IDLE_STALL_SEC) = coast + DS warning until the next shot or zone exit.
+         */
+        public Command idleSpinCommand(BooleanSupplier spin){
+            return runEnd(
+                () -> {
+                    if (!spin.getAsBoolean()) {
+                        idleStalled = false; // re-arm on a zone exit
+                    }
+                    double rpm = getFlywheelRpm();
+                    double rightRpm = getRightFlywheelRpm();
+                    double volts = spin.getAsBoolean() && !idleStalled ? idleVolts(rpm) : 0;
+                    double rightIdleVolts = spin.getAsBoolean() && !idleStalled ? idleVolts(rightRpm) : 0;
+                    // Stall cutoff: pushing but not turning = jammed wheel (either side) -> coast until re-armed.
+                    if (idleStallDebouncer.calculate((volts > 0 && rpm < LauncherConstants.IDLE_STALL_RPM)
+                            || (rightIdleVolts > 0 && rightRpm < LauncherConstants.IDLE_STALL_RPM))) {
+                        idleStalled = true;
+                        volts = 0;
+                        rightIdleVolts = 0;
+                        DriverStation.reportWarning("Flywheel idle stalled (jam?) -- idle off until the next shot or zone exit", false);
+                    }
+                    if (volts > 0) {
+                        flywheelLeader.setControl(flywheelVolts.withOutput(volts));
+                        flywheelBelted.setControl(beltedVolts.withOutput(beltedMotorVolts(volts)));
+                    } else {
+                        flywheelLeader.setControl(coast);
+                        flywheelBelted.setControl(coast);
+                    }
+                    flywheelRight.setControl(rightIdleVolts > 0 ? rightVolts.withOutput(rightIdleVolts) : coast);
+                },
+                () -> {
+                    flywheelLeader.setControl(coast);
+                    flywheelBelted.setControl(coast);
+                    flywheelRight.setControl(coast);
+                })
+                .beforeStarting(() -> idleStalled = false); // restarts after every shot = re-arm
         }
 
         /** Feeder backward super slowly (VIEW unjam) -- same duty as the shot's reverse window. */
@@ -326,6 +454,15 @@ public class LauncherSubsystem extends SubsystemBase {
         /** DPAD left/right: flywheel target -/+ one step. No requirement, so it works mid-shot. */
         public Command stepFlywheelRpmCommand(double deltaRpm){
             return Commands.runOnce(() -> flywheelTargetRpm = clampFlywheelRpm(flywheelTargetRpm + deltaRpm));
+        }
+
+        /** Hood target to the floor (0 deg, the bottom stop) -- path 1's "hood in". Ignored unless homed. No requirement. */
+        public Command hoodToFloorCommand(){
+            return Commands.runOnce(() -> {
+                if (hoodState == HoodState.HOMED) {
+                    hoodTargetDeg = 0;
+                }
+            });
         }
 
         /** DPAD up/down (hold): hood target moves at degPerSec while held. Ignored unless homed. No requirement. */
@@ -387,15 +524,16 @@ public class LauncherSubsystem extends SubsystemBase {
 
         //At-speed gates (only meaningful while shooting)
             double flywheelRpm = getFlywheelRpm();
+            double rightFlywheelRpm = getRightFlywheelRpm();
             double feederRpm = feeder.getVelocity().getValueAsDouble() * 60.0;
-            flywheelAtSpeed = shooting && atSpeed(flywheelRpm, shotTargetRpm,
-                LauncherConstants.FLYWHEEL_AT_SPEED_TOL_RPM);
+            flywheelAtSpeed = shooting && wheelsAtSpeed(flywheelAtSpeed, flywheelRpm, rightFlywheelRpm, shotTargetRpm);
             feederAtSpeed = shooting && atSpeed(feederRpm, LauncherConstants.FEEDER_TARGET_MOTOR_RPM,
                 LauncherConstants.FEEDER_TARGET_MOTOR_RPM * LauncherConstants.FEEDER_AT_SPEED_FRACTION);
 
         //Data
             targetRpmEntry.setDouble(shooting ? shotTargetRpm : flywheelTargetRpm);
             rpmEntry.setDouble(flywheelRpm);
+            rightRpmEntry.setDouble(rightFlywheelRpm);
             atSpeedEntry.setBoolean(flywheelAtSpeed);
             shootingEntry.setBoolean(shooting);
             motorRpmEntry.setDouble(flywheelLeader.getVelocity().getValueAsDouble() * 60.0);

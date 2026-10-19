@@ -40,7 +40,7 @@ public class ShotCalculator extends SubsystemBase {
     private boolean allianceWarned = false;
 
     private final ShuffleboardTab tab = Shuffleboard.getTab("Shooter Subsystem Tab");
-    private final GenericEntry aimedEntry = tab.add("Aimed At Target", false).getEntry();
+    private final GenericEntry aimedEntry = tab.add("SOTM Aimed", false).getEntry();
     private final GenericEntry distanceEntry = tab.add("Shot Distance (m)", 0.0).getEntry();
     private final GenericEntry headingErrorEntry = tab.add("Shot Heading Error (deg)", 0.0).getEntry();
     private final GenericEntry tableRpmEntry = tab.add("Shot Table RPM", 0.0).getEntry();
@@ -63,8 +63,7 @@ public class ShotCalculator extends SubsystemBase {
     @Override
     public void periodic(){
         var state = drivetrain.getState();
-        shot = calculate(state.Pose, state.Speeds,
-            hubToAimAt(practiceTestTag(), ownAlliance()));
+        shot = calculate(state.Pose, state.Speeds, FieldConstants.ownHubCenter(ownAlliance()));
         double errorDeg = shot.heading().minus(state.Pose.getRotation()).getDegrees();
         aimed = Math.abs(errorDeg) <= FieldConstants.HEADING_TOLERANCE_DEG;
 
@@ -74,11 +73,6 @@ public class ShotCalculator extends SubsystemBase {
         headingErrorEntry.setDouble(errorDeg);
         tableRpmEntry.setDouble(shot.flywheelRpm());
         tableHoodEntry.setDouble(shot.hoodDeg());
-    }
-
-    /** Test-tag practice mode: switch on and no FMS attached (never in a real match). */
-    public static boolean practiceTestTag(){
-        return AutoAimConstants.PRACTICE_TEST_TAG && !DriverStation.isFMSAttached();
     }
 
     // Own alliance; DriverStation may not know yet -- default BLUE and warn once.
@@ -95,12 +89,6 @@ public class ShotCalculator extends SubsystemBase {
     }
 
     //Pure helpers (no I/O, package-private for ShotCalculatorTest)
-        /** Own hub -- or the test tag's hub while practising off-FMS. */
-        static Translation2d hubToAimAt(boolean practiceTestTag, Alliance alliance){
-            return practiceTestTag ? AutoAimConstants.TEST_TAG_HUB
-                : FieldConstants.ownHubCenter(alliance);
-        }
-
         /** The full solution for one pose / robot-relative speed / hub. */
         static Shot calculate(Pose2d pose, ChassisSpeeds robotRelative, Translation2d hub){
             Translation2d launcher = pose.getTranslation()

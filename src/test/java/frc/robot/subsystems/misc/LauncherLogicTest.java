@@ -20,6 +20,15 @@ class LauncherLogicTest {
         assertEquals(2000, LauncherSubsystem.clampFlywheelRpm(LauncherConstants.FLYWHEEL_START_RPM), 1e-9);
     }
 
+    /** Zone idle: ~2.43 V feedforward (kV x 800 flywheel rpm), never 12 V; coast (0) once at/above 800. */
+    @Test
+    void idleVoltsAreFeedforwardOnlyAndNeverBrake() {
+        assertEquals(0.12625 * 800 / 60.0 * 26.0 / 18.0, LauncherSubsystem.idleVolts(0), 1e-9);
+        assertTrue(LauncherSubsystem.idleVolts(0) < 3.0);
+        assertEquals(0, LauncherSubsystem.idleVolts(800), 1e-9);
+        assertEquals(0, LauncherSubsystem.idleVolts(2000), 1e-9);
+    }
+
     /** Hood: 0 deg (homed bottom stop) to the 29 deg travel limit, nothing outside. */
     @Test
     void hoodTargetIsClamped() {
@@ -67,6 +76,28 @@ class LauncherLogicTest {
         assertTrue(LauncherSubsystem.atSpeed(1900, 2000, 100));
         assertFalse(LauncherSubsystem.atSpeed(1899, 2000, 100));
         assertTrue(LauncherSubsystem.atSpeed(2100, 2000, 100));
+    }
+
+    /** Flywheel gate: opens only ON the target, then holds through a dip of up to dropTol. */
+    @Test
+    void flywheelGateStartsOnTarget() {
+        assertFalse(LauncherSubsystem.flywheelAtSpeed(false, 1999, 2000, 100, 50), "not there yet: no early start");
+        assertTrue(LauncherSubsystem.flywheelAtSpeed(false, 2000, 2000, 100, 50));
+        assertTrue(LauncherSubsystem.flywheelAtSpeed(true, 1950, 2000, 100, 50), "a ball's dip keeps feeding");
+        assertFalse(LauncherSubsystem.flywheelAtSpeed(true, 1949, 2000, 100, 50), "a big drop closes the gate");
+        assertTrue(LauncherSubsystem.flywheelAtSpeed(true, 2100, 2000, 100, 50), "the top of the band is still tol");
+        assertFalse(LauncherSubsystem.flywheelAtSpeed(true, 2101, 2000, 100, 50), "too fast still holds the belts");
+        assertFalse(LauncherSubsystem.flywheelAtSpeed(true, 0, 0, 100, 50), "a zero target never opens");
+    }
+
+    /** Two separate wheels (team 2026-10-17): the gate needs BOTH -- a slowed right wheel alone closes it. */
+    @Test
+    void gateNeedsBothWheels() {
+        assertTrue(LauncherSubsystem.wheelsAtSpeed(false, 2000, 2000, 2000));
+        assertFalse(LauncherSubsystem.wheelsAtSpeed(false, 2000, 1990, 2000), "right wheel not there yet");
+        assertTrue(LauncherSubsystem.wheelsAtSpeed(true, 2000, 1950, 2000), "a ball's dip on one side keeps feeding");
+        assertFalse(LauncherSubsystem.wheelsAtSpeed(true, 2000, 1900, 2000), "a big right-wheel drop closes it");
+        assertFalse(LauncherSubsystem.wheelsAtSpeed(true, 1900, 2000, 2000), "and a big left-wheel drop");
     }
 
     /**

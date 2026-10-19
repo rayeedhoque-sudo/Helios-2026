@@ -55,29 +55,6 @@ class ShotCalculatorTest {
             "driving straight at the hub needs no turn");
     }
 
-    /** Practice: the test tag's hub on any alliance; otherwise our own hub. */
-    @Test
-    void practiceAimsAtTheTestTagHub() {
-        var blue = edu.wpi.first.wpilibj.DriverStation.Alliance.Blue;
-        assertEquals(AutoAimConstants.TEST_TAG_HUB, ShotCalculator.hubToAimAt(true, blue));
-        assertEquals(FieldConstants.HUB_CENTER_BLUE, ShotCalculator.hubToAimAt(false, blue));
-    }
-
-    /**
-     * The test tag (4) acts like tags 26/10: hub centre 0.6035 m straight behind the tag
-     * face, and TEST_TAG_FACING_DEG is the heading of a robot facing the tag.
-     */
-    @Test
-    void testTagSitsLikeTheFrontTags() {
-        var tag4 = new Translation2d(11.312, 4.035);   // 2026-rebuilt-welded.json, faces -X
-        var tag26 = new Translation2d(4.022, 4.035);   // faces -X
-        var testHub = AutoAimConstants.TEST_TAG_HUB;
-        assertEquals(0.6035, tag4.getDistance(testHub), 2e-3);
-        assertEquals(0.6035, tag26.getDistance(HUB), 2e-3);
-        assertEquals(AutoAimConstants.TEST_TAG_FACING_DEG, testHub.minus(tag4).getAngle().getDegrees(), 0.2);
-        assertEquals(0.0, HUB.minus(tag26).getAngle().getDegrees(), 0.2, "facing tag 26 = heading 0");
-    }
-
     /** Full solution: still robot on the hub's centreline faces it (+X), at the right distance. */
     @Test
     void calculateFacesTheHubFromStraightBehind() {

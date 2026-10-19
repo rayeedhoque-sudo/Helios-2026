@@ -72,6 +72,9 @@ public class FieldConstants {
         // positions -- the tags sit pinwheel-asymmetric on the faces (shot-math spec 1.1).
         public static final Translation2d HUB_CENTER_BLUE = new Translation2d(4.6255, 4.0346);
         public static final Translation2d HUB_CENTER_RED = new Translation2d(11.9155, 4.0346);
+        // Every hub tag plane is this far in front of its hub centre, along the tag's normal
+        // (2026-rebuilt-welded.json; restored from commit 76fca40 for the RB tag aim).
+        public static final double TAG_FACE_TO_HUB_DEPTH_METERS = 0.6035;
 
         // "Aimed At Target" tolerance (shot-math spec 6) -- RB only feeds inside it. TODO tune
         // on robot: widen if RB rarely fires while moving.
